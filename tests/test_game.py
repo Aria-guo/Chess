@@ -10,6 +10,7 @@ from chess_app.neural_trainer import (
     NeuralSelfTrainer,
     ResNetValueNet,
     encode_board,
+    heuristic_white_value,
     move_to_policy_index,
 )
 from chess_app.random_ai import BasicAI, RandomAI
@@ -170,6 +171,16 @@ def test_web_state_includes_evaluation_bar_data():
     assert payload["evaluation"]["label"].startswith(("+", "-"))
     assert payload["evaluation"]["black_percent"] == 100.0 - payload["evaluation"]["white_percent"]
     assert len(payload["policy"]) > 0
+
+
+def test_initial_position_evaluation_is_near_even(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"))
+    board = chess.Board()
+
+    payload = trainer.evaluation_payload(board)
+
+    assert heuristic_white_value(board) == 0.0
+    assert 35.0 <= payload["white_percent"] <= 65.0
 
 
 def test_learning_rate_can_be_adjusted(tmp_path):

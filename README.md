@@ -74,18 +74,19 @@ statistics update as games are parsed, and the page shows the active task,
 current imported games, current positions, and review-round progress.
 
 You can also paste PGN master games into the training panel or load a `.pgn`
-file directly with the PGN file picker. PGN training uses the game result as
-the value target and the actual game move as the policy target, so it can
-imitate master move choices instead of only learning from self-play outcomes.
+file directly with the PGN file picker. PGN training uses the actual game move
+as the policy target, so it can imitate master move choices without forcing the
+final game result onto every opening and middlegame position.
 PGN imports use a fixed training preset of 5 review rounds and a 0.0005
 learning rate; the manual review-round and learning-rate inputs are reserved
 for self-play training.
 
 The board includes an evaluation bar on the left, similar in spirit to common
-chess sites. It uses the current ResNet value model to estimate the position
-from White's perspective and animates as the game changes. The training panel
-also exposes the learning rate; the default is `0.001`, and smaller values such
-as `0.0005` make updates more conservative.
+chess sites. It blends a simple material/position heuristic with the current
+ResNet value model, and ignores clearly saturated neural values in otherwise
+normal positions. The training panel also exposes the learning rate for
+self-play training; the default is `0.001`, and smaller values such as `0.0005`
+make updates more conservative.
 
 The current model is saved locally to:
 

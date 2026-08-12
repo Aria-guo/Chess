@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from io import StringIO
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 import random
 
@@ -26,6 +27,11 @@ PROMOTION_TO_INDEX = {
 MOVE_POLICY_SIZE = 64 * 64 * len(PROMOTION_TO_INDEX)
 PGN_REVIEW_ROUNDS = 5
 PGN_LEARNING_RATE = 0.0005
+POLICY_LOSS_WEIGHT = 0.35
+SELF_PLAY_VALUE_LOSS_WEIGHT = 1.0
+PGN_VALUE_LOSS_WEIGHT = 0.0
+VALUE_TRUST_AFTER_POSITIONS = 10_000
+NEURAL_EVAL_WEIGHT = 0.25
 
 
 PIECE_TO_CHANNEL = {
@@ -272,7 +278,12 @@ class NeuralSelfTrainer:
             if not samples:
                 raise RuntimeError("Self-play produced no samples.")
 
-            self.train_samples(samples, review_rounds, "Self-play review")
+            self.train_samples(
+                samples,
+                review_rounds,
+                "Self-play review",
+                value_loss_weight=SELF_PLAY_VALUE_LOSS_WEIGHT,
+            )
 
             with self.lock:
                 self.stats.message = f"Finished {games} self-play games and {review_rounds} review rounds."
@@ -292,7 +303,12 @@ class NeuralSelfTrainer:
             if not samples:
                 raise RuntimeError("No finished PGN games were found.")
 
-            self.train_samples(samples, review_rounds, "PGN review")
+            self.train_samples(
+                samples,
+                review_rounds,
+                "PGN policy review",
+                value_loss_weight=PGN_VALUE_LOSS_WEIGHT,
+            )
 
             with self.lock:
                 self.stats.message = (
@@ -313,6 +329,7 @@ class NeuralSelfTrainer:
         samples: list[tuple[torch.Tensor, float, int]],
         review_rounds: int,
         label: str,
+        value_loss_weight: float = SELF_PLAY_VALUE_LOSS_WEIGHT,
     ) -> None:
         inputs = torch.stack([sample[0] for sample in samples])
         value_targets = torch.tensor([sample[1] for sample in samples], dtype=torch.float32)
@@ -335,7 +352,7 @@ class NeuralSelfTrainer:
                     value_predictions, policy_logits = self.model(batch_inputs)
                     value_loss = F.mse_loss(value_predictions, batch_value_targets)
                     policy_loss = F.cross_entropy(policy_logits, batch_policy_targets)
-                    loss = value_loss + 0.35 * policy_loss
+                    loss = value_loss_weight * value_loss + POLICY_LOSS_WEIGHT * policy_loss
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
@@ -497,10 +514,21 @@ class NeuralSelfTrainer:
         return side_to_move_value if board.turn == chess.WHITE else -side_to_move_value
 
     def evaluation_payload(self, board: chess.Board) -> dict:
-        white_value = self.evaluate_white(board)
+        neural_white_value = self.evaluate_white(board)
+        heuristic_value = heuristic_white_value(board)
+        with self.lock:
+            trained_positions = self.stats.total_positions
+
+        neural_weight = NEURAL_EVAL_WEIGHT if trained_positions >= VALUE_TRUST_AFTER_POSITIONS else 0.0
+        if abs(neural_white_value) > 0.95 and abs(heuristic_value) < 0.25:
+            neural_weight = 0.0
+
+        white_value = clamp_value(heuristic_value * (1.0 - neural_weight) + neural_white_value * neural_weight)
         white_percent = max(0.0, min(100.0, (white_value + 1.0) * 50.0))
         return {
             "white_value": white_value,
+            "neural_white_value": neural_white_value,
+            "heuristic_white_value": heuristic_value,
             "white_percent": white_percent,
             "black_percent": 100.0 - white_percent,
             "label": f"{white_value:+.2f}",
@@ -541,6 +569,40 @@ def outcome_value(result: str, side_to_move: bool) -> float:
     if side_to_move == chess.WHITE:
         return 1.0 if white_won else -1.0
     return -1.0 if white_won else 1.0
+
+
+def clamp_value(value: float) -> float:
+    return max(-1.0, min(1.0, value))
+
+
+def heuristic_white_value(board: chess.Board) -> float:
+    if board.is_checkmate():
+        return -1.0 if board.turn == chess.WHITE else 1.0
+    if board.is_stalemate() or board.is_insufficient_material():
+        return 0.0
+
+    piece_values = {
+        chess.PAWN: 100,
+        chess.KNIGHT: 320,
+        chess.BISHOP: 330,
+        chess.ROOK: 500,
+        chess.QUEEN: 900,
+        chess.KING: 0,
+    }
+    center_squares = {chess.D4, chess.E4, chess.D5, chess.E5}
+    near_center_squares = {chess.C3, chess.D3, chess.E3, chess.F3, chess.C4, chess.F4, chess.C5, chess.F5, chess.C6, chess.D6, chess.E6, chess.F6}
+
+    score = 0
+    for square, piece in board.piece_map().items():
+        sign = 1 if piece.color == chess.WHITE else -1
+        score += sign * piece_values[piece.piece_type]
+        if square in center_squares:
+            score += sign * 20
+        elif square in near_center_squares:
+            score += sign * 8
+
+    # Convert centipawn-like scores into a stable [-1, 1] bar value.
+    return clamp_value(math.tanh(score / 900.0))
 
 
 def move_to_policy_index(move: chess.Move) -> int:
