@@ -67,7 +67,9 @@ self-play games between AI agents, records every position and selected move,
 labels each position from the side-to-move perspective using the final result,
 and trains a small ResNet CNN with both a policy head and a value head.
 Cumulative training games, review rounds, positions, device, value loss, policy
-loss, and latest combined loss are shown in the page.
+loss, and latest combined loss are shown in the page. A larger statistics panel
+below the board summarizes self-play games, total trained games, PGN master
+games, review rounds, and trained positions.
 
 You can also paste PGN master games into the training panel or load a `.pgn`
 file directly with the PGN file picker. PGN training uses the game result as

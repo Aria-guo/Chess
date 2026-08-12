@@ -381,6 +381,48 @@ INDEX_HTML = r"""
       padding: 10px 0;
     }
 
+    .stats-panel {
+      grid-column: 1 / -1;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      padding: 18px 20px 20px;
+      box-shadow: 0 12px 28px rgba(30, 39, 48, 0.08);
+    }
+
+    .stats-panel h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      padding: 14px;
+      min-height: 86px;
+      display: grid;
+      align-content: space-between;
+      gap: 8px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .stat strong {
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
     @media (max-width: 900px) {
       .app {
         grid-template-columns: 1fr;
@@ -399,6 +441,16 @@ INDEX_HTML = r"""
 
       .side {
         min-height: 0;
+      }
+
+      .stats-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .stats-grid {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -473,6 +525,43 @@ INDEX_HTML = r"""
         <p class="hint" id="train-message">Neural trainer is idle.</p>
       </section>
     </aside>
+    <section class="stats-panel" aria-label="Training statistics">
+      <h2>Training Stats</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span>Self-play games</span>
+          <strong id="stats-self-play-games">0</strong>
+        </div>
+        <div class="stat">
+          <span>Total trained games</span>
+          <strong id="stats-total-trained-games">0</strong>
+        </div>
+        <div class="stat">
+          <span>PGN master games</span>
+          <strong id="stats-pgn-games">0</strong>
+        </div>
+        <div class="stat">
+          <span>Review rounds</span>
+          <strong id="stats-review-rounds">0</strong>
+        </div>
+        <div class="stat">
+          <span>Total positions</span>
+          <strong id="stats-total-positions">0</strong>
+        </div>
+        <div class="stat">
+          <span>PGN positions</span>
+          <strong id="stats-pgn-positions">0</strong>
+        </div>
+        <div class="stat">
+          <span>Value loss</span>
+          <strong id="stats-value-loss">-</strong>
+        </div>
+        <div class="stat">
+          <span>Policy loss</span>
+          <strong id="stats-policy-loss">-</strong>
+        </div>
+      </div>
+    </section>
   </main>
   <script>
     const boardEl = document.getElementById("board");
@@ -574,7 +663,16 @@ INDEX_HTML = r"""
       document.getElementById("eval-label").style.color = evaluation.white_percent > 35 ? "#111" : "#f7f7f7";
     }
 
+    function formatInteger(value) {
+      return Number(value || 0).toLocaleString();
+    }
+
+    function formatLoss(value) {
+      return value === null ? "-" : Number(value).toFixed(4);
+    }
+
     function renderTraining(training) {
+      const totalTrainedGames = Number(training.total_self_play_games || 0) + Number(training.total_pgn_games || 0);
       document.getElementById("train-arch").textContent = training.architecture;
       document.getElementById("train-device").textContent = training.device;
       document.getElementById("train-total-games").textContent = training.total_self_play_games;
@@ -582,9 +680,17 @@ INDEX_HTML = r"""
       document.getElementById("train-positions").textContent = training.total_positions;
       document.getElementById("train-pgn-games").textContent = training.total_pgn_games;
       document.getElementById("train-pgn-positions").textContent = training.total_pgn_positions;
-      document.getElementById("train-loss").textContent = training.last_loss === null ? "-" : training.last_loss.toFixed(4);
-      document.getElementById("train-value-loss").textContent = training.last_value_loss === null ? "-" : training.last_value_loss.toFixed(4);
-      document.getElementById("train-policy-loss").textContent = training.last_policy_loss === null ? "-" : training.last_policy_loss.toFixed(4);
+      document.getElementById("train-loss").textContent = formatLoss(training.last_loss);
+      document.getElementById("train-value-loss").textContent = formatLoss(training.last_value_loss);
+      document.getElementById("train-policy-loss").textContent = formatLoss(training.last_policy_loss);
+      document.getElementById("stats-self-play-games").textContent = formatInteger(training.total_self_play_games);
+      document.getElementById("stats-total-trained-games").textContent = formatInteger(totalTrainedGames);
+      document.getElementById("stats-pgn-games").textContent = formatInteger(training.total_pgn_games);
+      document.getElementById("stats-review-rounds").textContent = formatInteger(training.total_review_rounds);
+      document.getElementById("stats-total-positions").textContent = formatInteger(training.total_positions);
+      document.getElementById("stats-pgn-positions").textContent = formatInteger(training.total_pgn_positions);
+      document.getElementById("stats-value-loss").textContent = formatLoss(training.last_value_loss);
+      document.getElementById("stats-policy-loss").textContent = formatLoss(training.last_policy_loss);
       document.getElementById("train-lr").textContent = Number(training.learning_rate).toPrecision(3);
       const lrInput = document.getElementById("learning-rate");
       if (document.activeElement !== lrInput) {

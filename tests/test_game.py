@@ -131,6 +131,20 @@ def test_web_home_includes_pgn_file_import():
     assert 'id="pgn-file"' in response.get_data(as_text=True)
 
 
+def test_web_home_includes_training_stats_panel():
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Training Stats" in html
+    assert 'id="stats-self-play-games"' in html
+    assert 'id="stats-total-trained-games"' in html
+    assert 'id="stats-pgn-games"' in html
+
+
 def test_web_state_includes_evaluation_bar_data():
     app = create_app()
     client = app.test_client()
