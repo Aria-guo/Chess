@@ -79,7 +79,8 @@ as the policy target, so it can imitate master move choices without forcing the
 final game result onto every opening and middlegame position.
 PGN imports use a fixed training preset of 5 review rounds and a 0.0005
 learning rate; the manual review-round and learning-rate inputs are reserved
-for self-play training.
+for self-play training. Large PGN files are trained in chunks so the app can
+keep saving progress without holding every position in memory at once.
 
 The board includes an evaluation bar on the left, similar in spirit to common
 chess sites. It blends a simple material/position heuristic with the current

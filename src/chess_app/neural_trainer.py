@@ -33,6 +33,7 @@ SELF_PLAY_VALUE_LOSS_WEIGHT = 1.0
 PGN_VALUE_LOSS_WEIGHT = 0.0
 VALUE_TRUST_AFTER_POSITIONS = 10_000
 NEURAL_EVAL_WEIGHT = 0.25
+PGN_CHUNK_POSITIONS = 20_000
 
 
 PIECE_TO_CHANNEL = {
@@ -338,21 +339,63 @@ class NeuralSelfTrainer:
     def train_pgn_text(self, pgn_text: str, review_rounds: int) -> None:
         try:
             review_rounds = max(1, min(review_rounds, 200))
-            samples, game_count = self.generate_pgn_samples(pgn_text)
-            if not samples:
-                raise RuntimeError("No finished PGN games were found.")
+            stream = StringIO(pgn_text)
+            samples: list[tuple[torch.Tensor, float, int]] = []
+            game_count = 0
+            position_count = 0
+            chunk_count = 0
 
-            self.train_samples(
-                samples,
-                review_rounds,
-                "PGN policy review",
-                value_loss_weight=PGN_VALUE_LOSS_WEIGHT,
-            )
+            while True:
+                game = chess.pgn.read_game(stream)
+                if game is None:
+                    break
+                game_samples = self.samples_from_pgn_game(game)
+                if not game_samples:
+                    continue
+
+                game_count += 1
+                position_count += len(game_samples)
+                samples.extend(game_samples)
+                with self.lock:
+                    self.stats.total_pgn_games += 1
+                    self.stats.total_pgn_positions += len(game_samples)
+                    self.stats.total_positions += len(game_samples)
+                    self.stats.active_games += 1
+                    self.stats.active_positions += len(game_samples)
+                    self.stats.message = (
+                        f"Loaded {self.stats.active_games} PGN games, "
+                        f"{self.stats.active_positions} positions. Training in chunks."
+                    )
+                    should_save_stats = self.stats.active_games % 50 == 0
+                if should_save_stats:
+                    self.save_stats()
+
+                if len(samples) >= PGN_CHUNK_POSITIONS:
+                    chunk_count += 1
+                    self.train_samples(
+                        samples,
+                        review_rounds,
+                        f"PGN policy chunk {chunk_count}",
+                        value_loss_weight=PGN_VALUE_LOSS_WEIGHT,
+                    )
+                    samples = []
+
+            if samples:
+                chunk_count += 1
+                self.train_samples(
+                    samples,
+                    review_rounds,
+                    f"PGN policy chunk {chunk_count}",
+                    value_loss_weight=PGN_VALUE_LOSS_WEIGHT,
+                )
+
+            if game_count == 0:
+                raise RuntimeError("No finished PGN games were found.")
 
             with self.lock:
                 self.stats.message = (
                     f"Finished PGN review: {game_count} games, "
-                    f"{len(samples)} positions, {review_rounds} rounds."
+                    f"{position_count} positions, {chunk_count} chunks."
                 )
             self.save()
         except Exception as exc:
@@ -485,29 +528,17 @@ class NeuralSelfTrainer:
             game = chess.pgn.read_game(stream)
             if game is None:
                 break
-            result = game.headers.get("Result", "*")
-            if result not in {"1-0", "0-1", "1/2-1/2"}:
-                continue
-
-            board = game.board()
-            history: list[tuple[chess.Board, bool, chess.Move]] = []
-            for move in game.mainline_moves():
-                history.append((board.copy(stack=False), board.turn, move))
-                board.push(move)
-
-            if not history:
+            game_samples = self.samples_from_pgn_game(game)
+            if not game_samples:
                 continue
             game_count += 1
-            position_count = 0
-            for position, turn, move in history:
-                samples.append((encode_board(position), outcome_value(result, turn), move_to_policy_index(move)))
-                position_count += 1
+            samples.extend(game_samples)
             with self.lock:
                 self.stats.total_pgn_games += 1
-                self.stats.total_pgn_positions += position_count
-                self.stats.total_positions += position_count
+                self.stats.total_pgn_positions += len(game_samples)
+                self.stats.total_positions += len(game_samples)
                 self.stats.active_games += 1
-                self.stats.active_positions += position_count
+                self.stats.active_positions += len(game_samples)
                 self.stats.message = (
                     f"Loaded {self.stats.active_games} PGN games, "
                     f"{self.stats.active_positions} positions. Review will start after parsing."
@@ -517,6 +548,18 @@ class NeuralSelfTrainer:
                 self.save_stats()
 
         return samples, game_count
+
+    def samples_from_pgn_game(self, game: chess.pgn.Game) -> list[tuple[torch.Tensor, float, int]]:
+        result = game.headers.get("Result", "*")
+        if result not in {"1-0", "0-1", "1/2-1/2"}:
+            return []
+
+        board = game.board()
+        samples: list[tuple[torch.Tensor, float, int]] = []
+        for move in game.mainline_moves():
+            samples.append((encode_board(board), outcome_value(result, board.turn), move_to_policy_index(move)))
+            board.push(move)
+        return samples
 
     def evaluate(self, board: chess.Board) -> float:
         self.model.eval()
