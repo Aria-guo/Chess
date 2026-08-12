@@ -50,7 +50,7 @@ INDEX_HTML = r"""
     .app {
       min-height: 100vh;
       display: grid;
-      grid-template-columns: minmax(360px, 76vmin) 340px;
+      grid-template-columns: minmax(390px, calc(76vmin + 42px)) 340px;
       gap: 24px;
       align-items: start;
       justify-content: center;
@@ -58,8 +58,60 @@ INDEX_HTML = r"""
     }
 
     .board-wrap {
-      width: min(76vmin, calc(100vw - 420px));
-      min-width: 360px;
+      width: min(calc(76vmin + 42px), calc(100vw - 420px));
+      min-width: 390px;
+    }
+
+    .board-shell {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .board-column {
+      min-width: 0;
+    }
+
+    .eval-bar {
+      position: relative;
+      min-height: 360px;
+      border: 2px solid #27313b;
+      background: #111;
+      overflow: hidden;
+      box-shadow: 0 18px 45px rgba(30, 39, 48, 0.14);
+    }
+
+    .eval-white {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 50%;
+      background: #f7f7f7;
+      transition: height 260ms ease;
+    }
+
+    .eval-mid {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      height: 2px;
+      background: rgba(203, 62, 62, 0.76);
+      transform: translateY(-1px);
+    }
+
+    .eval-label {
+      position: absolute;
+      left: 50%;
+      bottom: 8px;
+      transform: translateX(-50%) rotate(-90deg);
+      transform-origin: center;
+      font-size: 12px;
+      font-weight: 850;
+      color: #111;
+      white-space: nowrap;
     }
 
     .files {
@@ -315,6 +367,11 @@ INDEX_HTML = r"""
         min-width: 0;
       }
 
+      .board-shell {
+        grid-template-columns: 18px 1fr;
+        gap: 10px;
+      }
+
       .side {
         min-height: 0;
       }
@@ -324,8 +381,17 @@ INDEX_HTML = r"""
 <body>
   <main class="app">
     <section class="board-wrap" aria-label="Chess board">
-      <div class="files" id="files"></div>
-      <div class="board" id="board"></div>
+      <div class="board-shell">
+        <div class="eval-bar" aria-label="Position evaluation">
+          <div class="eval-white" id="eval-white"></div>
+          <div class="eval-mid"></div>
+          <div class="eval-label" id="eval-label">+0.00</div>
+        </div>
+        <div class="board-column">
+          <div class="files" id="files"></div>
+          <div class="board" id="board"></div>
+        </div>
+      </div>
     </section>
     <aside class="side">
       <h1>Chess</h1>
@@ -339,6 +405,7 @@ INDEX_HTML = r"""
         <div class="row"><span>Turn</span><strong id="turn">white</strong></div>
         <div class="row"><span>Status</span><strong id="status">Loading</strong></div>
         <div class="row"><span>Book</span><strong id="book">search</strong></div>
+        <div class="row"><span>Eval</span><strong id="eval">+0.00</strong></div>
       </div>
       <p class="message" id="message">Loading game...</p>
       <div class="move-list" id="moves"></div>
@@ -352,6 +419,9 @@ INDEX_HTML = r"""
           <label>Review rounds
             <input id="train-rounds" type="number" min="1" max="200" value="30">
           </label>
+          <label>Learning rate
+            <input id="learning-rate" type="number" min="0.00001" max="0.1" step="0.0001" value="0.001">
+          </label>
           <button class="train-button" type="button" id="train-button">Train model</button>
         </div>
         <div class="training-status">
@@ -361,6 +431,7 @@ INDEX_HTML = r"""
           <div class="row"><span>Total rounds</span><strong id="train-total-rounds">0</strong></div>
           <div class="row"><span>Positions</span><strong id="train-positions">0</strong></div>
           <div class="row"><span>Last loss</span><strong id="train-loss">-</strong></div>
+          <div class="row"><span>Learning rate</span><strong id="train-lr">0.001</strong></div>
         </div>
         <p class="hint" id="train-message">Neural trainer is idle.</p>
       </section>
@@ -452,9 +523,17 @@ INDEX_HTML = r"""
       document.getElementById("turn").textContent = state.turn;
       document.getElementById("status").textContent = state.status;
       document.getElementById("book").textContent = state.book || "search";
+      document.getElementById("eval").textContent = state.evaluation.label;
       messageEl.textContent = state.message;
       document.getElementById("moves").textContent = state.moves.length ? state.moves.join("\n") : "No moves yet.";
+      renderEvaluation(state.evaluation);
       renderTraining(state.training);
+    }
+
+    function renderEvaluation(evaluation) {
+      document.getElementById("eval-white").style.height = `${evaluation.white_percent}%`;
+      document.getElementById("eval-label").textContent = evaluation.label;
+      document.getElementById("eval-label").style.color = evaluation.white_percent > 35 ? "#111" : "#f7f7f7";
     }
 
     function renderTraining(training) {
@@ -464,6 +543,11 @@ INDEX_HTML = r"""
       document.getElementById("train-total-rounds").textContent = training.total_review_rounds;
       document.getElementById("train-positions").textContent = training.total_positions;
       document.getElementById("train-loss").textContent = training.last_loss === null ? "-" : training.last_loss.toFixed(4);
+      document.getElementById("train-lr").textContent = Number(training.learning_rate).toPrecision(3);
+      const lrInput = document.getElementById("learning-rate");
+      if (document.activeElement !== lrInput) {
+        lrInput.value = training.learning_rate;
+      }
       document.getElementById("train-message").textContent = training.message;
       document.getElementById("train-button").disabled = training.running;
     }
@@ -500,17 +584,21 @@ INDEX_HTML = r"""
     }
 
     async function refreshTraining() {
-      const training = await api("/api/training");
+      const payload = await api("/api/training");
       if (state) {
-        state.training = training;
-        renderTraining(training);
+        state.training = payload.training;
+        state.evaluation = payload.evaluation;
+        renderTraining(payload.training);
+        renderEvaluation(payload.evaluation);
+        document.getElementById("eval").textContent = payload.evaluation.label;
       }
     }
 
     async function startTraining() {
       const games = Number(document.getElementById("train-games").value || 1);
       const reviewRounds = Number(document.getElementById("train-rounds").value || 1);
-      const training = await api("/api/train", {games, review_rounds: reviewRounds});
+      const learningRate = Number(document.getElementById("learning-rate").value || 0.001);
+      const training = await api("/api/train", {games, review_rounds: reviewRounds, learning_rate: learningRate});
       if (state) {
         state.training = training;
         renderTraining(training);
@@ -595,7 +683,7 @@ class WebSession:
         self.moves.append(f"AI: {san}")
         self.message = f"AI played {san}" + (f" ({book_name})." if book_name else ".")
 
-    def state(self) -> dict:
+    def state(self, evaluation: dict | None = None) -> dict:
         board = self.game.board
         files = list(range(8)) if self.game.human_color is PlayerColor.WHITE else list(range(7, -1, -1))
         ranks = list(range(7, -1, -1)) if self.game.human_color is PlayerColor.WHITE else list(range(8))
@@ -625,6 +713,7 @@ class WebSession:
             "game_over": board.is_game_over(claim_draw=True),
             "status": self.game.status(),
             "book": self.ai.last_book_name,
+            "evaluation": evaluation or {"white_value": 0.0, "white_percent": 50.0, "black_percent": 50.0, "label": "+0.00"},
             "message": self.message,
             "files": [chess.FILE_NAMES[file_index] for file_index in files],
             "squares": squares,
@@ -662,7 +751,7 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
 
     @app.get("/api/state")
     def state():
-        payload = session.state()
+        payload = session.state(evaluation=trainer.evaluation_payload(session.game.board))
         payload["training"] = trainer.payload()
         return jsonify(payload)
 
@@ -670,7 +759,7 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
     def new_game():
         payload = request.get_json(silent=True) or {}
         session.reset(parse_color(payload.get("color", "white")))
-        response = session.state()
+        response = session.state(evaluation=trainer.evaluation_payload(session.game.board))
         response["training"] = trainer.payload()
         return jsonify(response)
 
@@ -681,20 +770,30 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
             session.play_human_move(str(payload.get("from", "")), str(payload.get("to", "")))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        response = session.state()
+        response = session.state(evaluation=trainer.evaluation_payload(session.game.board))
         response["training"] = trainer.payload()
         return jsonify(response)
 
     @app.get("/api/training")
     def training():
-        return jsonify(trainer.payload())
+        return jsonify(
+            {
+                "training": trainer.payload(),
+                "evaluation": trainer.evaluation_payload(session.game.board),
+            }
+        )
 
     @app.post("/api/train")
     def train():
         payload = request.get_json(silent=True) or {}
         games = int(payload.get("games", 100))
         review_rounds = int(payload.get("review_rounds", 30))
-        started = trainer.start_background_training(games=games, review_rounds=review_rounds)
+        learning_rate = float(payload.get("learning_rate", 0.001))
+        started = trainer.start_background_training(
+            games=games,
+            review_rounds=review_rounds,
+            learning_rate=learning_rate,
+        )
         response = trainer.payload()
         if not started:
             response["message"] = "Training is already running."
@@ -706,4 +805,4 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
 
 def run_web(host: str = "127.0.0.1", port: int = 8765, human_color: PlayerColor = PlayerColor.WHITE) -> None:
     app = create_app(human_color=human_color)
-    app.run(host=host, port=port, debug=False)
+    app.run(host=host, port=port, debug=False, threaded=True)

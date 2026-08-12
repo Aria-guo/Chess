@@ -68,6 +68,12 @@ final result, and trains a small ResNet CNN with a value head. Cumulative
 training games, review rounds, positions, device, and latest loss are shown in
 the page.
 
+The board includes an evaluation bar on the left, similar in spirit to common
+chess sites. It uses the current ResNet value model to estimate the position
+from White's perspective and animates as the game changes. The training panel
+also exposes the learning rate; the default is `0.001`, and smaller values such
+as `0.0005` make updates more conservative.
+
 The current model is saved locally to:
 
 ```text

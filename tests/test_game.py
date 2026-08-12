@@ -1,7 +1,7 @@
 import chess
 
 from chess_app.game import ChessGame, PlayerColor
-from chess_app.neural_trainer import ResNetValueNet, encode_board
+from chess_app.neural_trainer import NeuralSelfTrainer, ResNetValueNet, encode_board
 from chess_app.random_ai import BasicAI, RandomAI
 from chess_app.web_app import create_app
 
@@ -115,5 +115,26 @@ def test_web_training_status_available():
     payload = response.get_json()
 
     assert response.status_code == 200
-    assert payload["architecture"] == "ResNet CNN + value head"
-    assert "total_self_play_games" in payload
+    assert payload["training"]["architecture"] == "ResNet CNN + value head"
+    assert "total_self_play_games" in payload["training"]
+    assert 0 <= payload["evaluation"]["white_percent"] <= 100
+
+
+def test_web_state_includes_evaluation_bar_data():
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/api/state")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["evaluation"]["label"].startswith(("+", "-"))
+    assert payload["evaluation"]["black_percent"] == 100.0 - payload["evaluation"]["white_percent"]
+
+
+def test_learning_rate_can_be_adjusted(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"))
+
+    trainer.set_learning_rate(0.0005)
+
+    assert trainer.payload()["learning_rate"] == 0.0005

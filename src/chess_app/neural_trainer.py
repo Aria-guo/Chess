@@ -81,6 +81,7 @@ class TrainingStats:
     running: bool = False
     message: str = "Neural trainer is idle."
     model_path: str = "models/resnet_value.pt"
+    learning_rate: float = 0.001
     recent_losses: list[float] = field(default_factory=list)
 
     def payload(self) -> dict:
@@ -92,6 +93,7 @@ class TrainingStats:
             "running": self.running,
             "message": self.message,
             "model_path": self.model_path,
+            "learning_rate": self.learning_rate,
             "recent_losses": self.recent_losses[-20:],
         }
 
@@ -103,6 +105,7 @@ class NeuralSelfTrainer:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
         self.stats = TrainingStats(model_path=model_path)
         self.lock = threading.Lock()
+        self.model_lock = threading.Lock()
         self.model_path = Path(model_path)
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         self.load_if_available()
@@ -117,8 +120,10 @@ class NeuralSelfTrainer:
         self.stats.total_review_rounds = checkpoint.get("total_review_rounds", 0)
         self.stats.total_positions = checkpoint.get("total_positions", 0)
         self.stats.last_loss = checkpoint.get("last_loss")
+        self.stats.learning_rate = checkpoint.get("learning_rate", self.stats.learning_rate)
         self.stats.recent_losses = checkpoint.get("recent_losses", [])
         self.stats.message = "Loaded existing ResNet value model."
+        self.set_learning_rate(self.stats.learning_rate)
 
     def save(self) -> None:
         torch.save(
@@ -129,17 +134,32 @@ class NeuralSelfTrainer:
                 "total_review_rounds": self.stats.total_review_rounds,
                 "total_positions": self.stats.total_positions,
                 "last_loss": self.stats.last_loss,
+                "learning_rate": self.stats.learning_rate,
                 "recent_losses": self.stats.recent_losses,
             },
             self.model_path,
         )
 
-    def start_background_training(self, games: int, review_rounds: int) -> bool:
+    def set_learning_rate(self, learning_rate: float) -> None:
+        learning_rate = max(0.00001, min(float(learning_rate), 0.1))
+        for group in self.optimizer.param_groups:
+            group["lr"] = learning_rate
+        self.stats.learning_rate = learning_rate
+
+    def start_background_training(self, games: int, review_rounds: int, learning_rate: float | None = None) -> bool:
         with self.lock:
             if self.stats.running:
                 return False
+            if learning_rate is not None:
+                learning_rate = max(0.00001, min(float(learning_rate), 0.1))
+                for group in self.optimizer.param_groups:
+                    group["lr"] = learning_rate
+                self.stats.learning_rate = learning_rate
             self.stats.running = True
-            self.stats.message = f"Starting self-play: {games} games, {review_rounds} review rounds."
+            self.stats.message = (
+                f"Starting self-play: {games} games, {review_rounds} review rounds, "
+                f"lr {self.stats.learning_rate:g}."
+            )
 
         thread = threading.Thread(
             target=self.train_self_play,
@@ -169,12 +189,13 @@ class NeuralSelfTrainer:
                 for batch_inputs, batch_targets in loader:
                     batch_inputs = batch_inputs.to(self.device)
                     batch_targets = batch_targets.to(self.device)
-                    self.optimizer.zero_grad()
-                    predictions = self.model(batch_inputs)
-                    loss = F.mse_loss(predictions, batch_targets)
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    self.optimizer.step()
+                    with self.model_lock:
+                        self.optimizer.zero_grad()
+                        predictions = self.model(batch_inputs)
+                        loss = F.mse_loss(predictions, batch_targets)
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                        self.optimizer.step()
                     total_loss += float(loss.detach().cpu())
                     batches += 1
 
@@ -222,7 +243,22 @@ class NeuralSelfTrainer:
         self.model.eval()
         with torch.no_grad():
             tensor = encode_board(board).unsqueeze(0).to(self.device)
-            return float(self.model(tensor).detach().cpu()[0])
+            with self.model_lock:
+                return float(self.model(tensor).detach().cpu()[0])
+
+    def evaluate_white(self, board: chess.Board) -> float:
+        side_to_move_value = self.evaluate(board)
+        return side_to_move_value if board.turn == chess.WHITE else -side_to_move_value
+
+    def evaluation_payload(self, board: chess.Board) -> dict:
+        white_value = self.evaluate_white(board)
+        white_percent = max(0.0, min(100.0, (white_value + 1.0) * 50.0))
+        return {
+            "white_value": white_value,
+            "white_percent": white_percent,
+            "black_percent": 100.0 - white_percent,
+            "label": f"{white_value:+.2f}",
+        }
 
     def payload(self) -> dict:
         with self.lock:
@@ -257,4 +293,3 @@ def outcome_value(result: str, side_to_move: bool) -> float:
     if side_to_move == chess.WHITE:
         return 1.0 if white_won else -1.0
     return -1.0 if white_won else 1.0
-
