@@ -8,6 +8,7 @@ A clean terminal chess project. The first version is deliberately simple:
 - Text input such as `e2e4`, `Nf3`, `O-O`, `quit`
 - Optional Textual UI with mouse/touch-friendly square selection
 - Optional graphical mouse UI with large centered pieces
+- Local browser app with a responsive board and mouse controls
 - Built-in repertoire opening book
 
 ## Setup
@@ -49,6 +50,15 @@ python -m chess_app --gui
 
 The graphical mode renders pieces with a large font in the exact center of each
 square and supports mouse-only play plus White/Black selection buttons.
+
+Local browser mode:
+
+```bash
+python -m chess_app --web
+```
+
+Then open `http://127.0.0.1:8765`. The web app uses the same Python rules,
+opening book, and AI search as the terminal app.
 
 ## Move Input
 

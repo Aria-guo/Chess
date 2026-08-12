@@ -2,6 +2,7 @@ import chess
 
 from chess_app.game import ChessGame, PlayerColor
 from chess_app.random_ai import BasicAI, RandomAI
+from chess_app.web_app import create_app
 
 
 def test_human_move_accepts_uci():
@@ -67,3 +68,28 @@ def test_black_human_means_ai_starts():
 
     assert game.is_ai_turn
     assert not game.is_human_turn
+
+
+def test_web_app_can_play_a_move_and_get_ai_reply():
+    app = create_app()
+    client = app.test_client()
+
+    response = client.post("/api/move", json={"from": "d2", "to": "d4"})
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["turn"] == "white"
+    assert payload["moves"][0].startswith("You:")
+    assert payload["moves"][1].startswith("AI:")
+
+
+def test_web_app_black_choice_gets_ai_opening_move():
+    app = create_app()
+    client = app.test_client()
+
+    response = client.post("/api/new", json={"color": "black"})
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["human_color"] == "black"
+    assert payload["moves"][0].startswith("AI:")

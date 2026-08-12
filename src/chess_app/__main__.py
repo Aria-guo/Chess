@@ -20,10 +20,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Play terminal chess against a random legal AI.")
     parser.add_argument("--tui", action="store_true", help="Use mouse/touch-friendly Textual UI.")
     parser.add_argument("--gui", action="store_true", help="Use graphical mouse UI with large centered pieces.")
+    parser.add_argument("--web", action="store_true", help="Run the local browser-based chess app.")
+    parser.add_argument("--host", default="127.0.0.1", help="Host for --web mode.")
+    parser.add_argument("--port", type=int, default=8765, help="Port for --web mode.")
     parser.add_argument("--color", type=parse_color, default=PlayerColor.WHITE, help="Human color: white or black.")
     args = parser.parse_args()
 
-    if args.gui:
+    if args.web:
+        from chess_app.web_app import run_web
+
+        run_web(host=args.host, port=args.port, human_color=args.color)
+    elif args.gui:
         from chess_app.pygame_app import run_pygame
 
         run_pygame(args.color)
