@@ -24,6 +24,8 @@ PROMOTION_TO_INDEX = {
     chess.QUEEN: 4,
 }
 MOVE_POLICY_SIZE = 64 * 64 * len(PROMOTION_TO_INDEX)
+PGN_REVIEW_ROUNDS = 5
+PGN_LEARNING_RATE = 0.0005
 
 
 PIECE_TO_CHANNEL = {
@@ -232,23 +234,23 @@ class NeuralSelfTrainer:
     def start_background_pgn_training(
         self,
         pgn_text: str,
-        review_rounds: int,
-        learning_rate: float | None = None,
+        review_rounds: int = PGN_REVIEW_ROUNDS,
+        learning_rate: float | None = PGN_LEARNING_RATE,
     ) -> bool:
+        review_rounds = PGN_REVIEW_ROUNDS
+        learning_rate = PGN_LEARNING_RATE
         with self.lock:
             if self.stats.running:
                 return False
-            if learning_rate is not None:
-                learning_rate = max(0.00001, min(float(learning_rate), 0.1))
-                for group in self.optimizer.param_groups:
-                    group["lr"] = learning_rate
-                self.stats.learning_rate = learning_rate
+            for group in self.optimizer.param_groups:
+                group["lr"] = learning_rate
+            self.stats.learning_rate = learning_rate
             self.stats.running = True
             self.stats.active_task = "pgn"
             self.stats.active_games = 0
             self.stats.active_positions = 0
             self.stats.active_review_round = 0
-            self.stats.active_review_rounds = max(1, min(int(review_rounds), 200))
+            self.stats.active_review_rounds = review_rounds
             self.stats.message = (
                 f"Starting PGN review: {review_rounds} rounds, "
                 f"lr {self.stats.learning_rate:g}."
@@ -509,6 +511,8 @@ class NeuralSelfTrainer:
             payload = self.stats.payload()
         payload["device"] = str(self.device)
         payload["architecture"] = "ResNet CNN + policy head + value head"
+        payload["pgn_review_rounds"] = PGN_REVIEW_ROUNDS
+        payload["pgn_learning_rate"] = PGN_LEARNING_RATE
         return payload
 
 

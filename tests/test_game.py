@@ -1,7 +1,17 @@
+import time
+
 import chess
 
 from chess_app.game import ChessGame, PlayerColor
-from chess_app.neural_trainer import MOVE_POLICY_SIZE, NeuralSelfTrainer, ResNetValueNet, encode_board, move_to_policy_index
+from chess_app.neural_trainer import (
+    MOVE_POLICY_SIZE,
+    PGN_LEARNING_RATE,
+    PGN_REVIEW_ROUNDS,
+    NeuralSelfTrainer,
+    ResNetValueNet,
+    encode_board,
+    move_to_policy_index,
+)
 from chess_app.random_ai import BasicAI, RandomAI
 from chess_app.web_app import create_app
 
@@ -120,6 +130,8 @@ def test_web_training_status_available():
     assert "total_self_play_games" in payload["training"]
     assert "active_games" in payload["training"]
     assert "active_review_round" in payload["training"]
+    assert payload["training"]["pgn_review_rounds"] == PGN_REVIEW_ROUNDS
+    assert payload["training"]["pgn_learning_rate"] == PGN_LEARNING_RATE
     assert 0 <= payload["evaluation"]["white_percent"] <= 100
 
 
@@ -235,3 +247,30 @@ def test_web_pgn_training_can_start():
 
     assert response.status_code == 200
     assert payload["running"] is True
+
+
+def test_web_pgn_training_uses_fixed_preset():
+    app = create_app()
+    client = app.test_client()
+    pgn = """
+[Event "Short"]
+[Result "0-1"]
+
+1. f3 e5 2. g4 Qh4# 0-1
+"""
+
+    response = client.post(
+        "/api/train-pgn",
+        json={"pgn": pgn, "review_rounds": 99, "learning_rate": 0.02},
+    )
+    payload = response.get_json()
+
+    try:
+        assert response.status_code == 200
+        assert payload["active_review_rounds"] == PGN_REVIEW_ROUNDS
+        assert payload["learning_rate"] == PGN_LEARNING_RATE
+    finally:
+        deadline = time.time() + 10
+        while payload["running"] and time.time() < deadline:
+            time.sleep(0.05)
+            payload = client.get("/api/training").get_json()["training"]

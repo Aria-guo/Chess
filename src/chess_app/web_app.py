@@ -6,7 +6,7 @@ import chess
 from flask import Flask, jsonify, request
 
 from chess_app.game import ChessGame, PlayerColor
-from chess_app.neural_trainer import NeuralSelfTrainer
+from chess_app.neural_trainer import PGN_LEARNING_RATE, PGN_REVIEW_ROUNDS, NeuralSelfTrainer
 from chess_app.random_ai import BasicAI
 from chess_app.terminal import piece_symbol
 
@@ -521,6 +521,7 @@ INDEX_HTML = r"""
           <div class="row"><span>Value loss</span><strong id="train-value-loss">-</strong></div>
           <div class="row"><span>Policy loss</span><strong id="train-policy-loss">-</strong></div>
           <div class="row"><span>Learning rate</span><strong id="train-lr">0.001</strong></div>
+          <div class="row"><span>PGN preset</span><strong id="train-pgn-preset">5 rounds / 0.0005</strong></div>
         </div>
         <p class="hint" id="train-message">Neural trainer is idle.</p>
       </section>
@@ -706,6 +707,7 @@ INDEX_HTML = r"""
       document.getElementById("train-loss").textContent = formatLoss(training.last_loss);
       document.getElementById("train-value-loss").textContent = formatLoss(training.last_value_loss);
       document.getElementById("train-policy-loss").textContent = formatLoss(training.last_policy_loss);
+      document.getElementById("train-pgn-preset").textContent = `${training.pgn_review_rounds} rounds / ${training.pgn_learning_rate}`;
       document.getElementById("stats-self-play-games").textContent = formatInteger(training.total_self_play_games);
       document.getElementById("stats-total-trained-games").textContent = formatInteger(totalTrainedGames);
       document.getElementById("stats-pgn-games").textContent = formatInteger(training.total_pgn_games);
@@ -786,9 +788,7 @@ INDEX_HTML = r"""
 
     async function startPgnTraining() {
       const pgn = document.getElementById("pgn-input").value;
-      const reviewRounds = Number(document.getElementById("train-rounds").value || 1);
-      const learningRate = Number(document.getElementById("learning-rate").value || 0.001);
-      const training = await api("/api/train-pgn", {pgn, review_rounds: reviewRounds, learning_rate: learningRate});
+      const training = await api("/api/train-pgn", {pgn});
       if (state) {
         state.training = training;
         renderTraining(training);
@@ -1022,14 +1022,12 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
     def train_pgn():
         payload = request.get_json(silent=True) or {}
         pgn_text = str(payload.get("pgn", ""))
-        review_rounds = int(payload.get("review_rounds", 30))
-        learning_rate = float(payload.get("learning_rate", 0.001))
         if not pgn_text.strip():
             return jsonify({"error": "Paste at least one PGN game first."}), 400
         started = trainer.start_background_pgn_training(
             pgn_text=pgn_text,
-            review_rounds=review_rounds,
-            learning_rate=learning_rate,
+            review_rounds=PGN_REVIEW_ROUNDS,
+            learning_rate=PGN_LEARNING_RATE,
         )
         response = trainer.payload()
         if not started:

@@ -77,6 +77,9 @@ You can also paste PGN master games into the training panel or load a `.pgn`
 file directly with the PGN file picker. PGN training uses the game result as
 the value target and the actual game move as the policy target, so it can
 imitate master move choices instead of only learning from self-play outcomes.
+PGN imports use a fixed training preset of 5 review rounds and a 0.0005
+learning rate; the manual review-round and learning-rate inputs are reserved
+for self-play training.
 
 The board includes an evaluation bar on the left, similar in spirit to common
 chess sites. It uses the current ResNet value model to estimate the position
