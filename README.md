@@ -9,7 +9,7 @@ A clean terminal chess project. The first version is deliberately simple:
 - Optional Textual UI with mouse/touch-friendly square selection
 - Optional graphical mouse UI with large centered pieces
 - Local browser app with a responsive board and mouse controls
-- Browser self-training panel backed by a ResNet CNN value model
+- Browser self-training panel backed by a ResNet CNN policy/value model
 - Built-in repertoire opening book
 
 ## Setup
@@ -62,11 +62,17 @@ Then open `http://127.0.0.1:8765`. The web app uses the same Python rules,
 opening book, and AI search as the terminal app.
 
 The web app also includes a self-training panel. Enter a number of self-play
-games and review rounds, then start training. The trainer plays games between
-AI agents, labels each position from the side-to-move perspective using the
-final result, and trains a small ResNet CNN with a value head. Cumulative
-training games, review rounds, positions, device, and latest loss are shown in
-the page.
+games and review rounds, then start training. The trainer plays complete
+self-play games between AI agents, records every position and selected move,
+labels each position from the side-to-move perspective using the final result,
+and trains a small ResNet CNN with both a policy head and a value head.
+Cumulative training games, review rounds, positions, device, value loss, policy
+loss, and latest combined loss are shown in the page.
+
+You can also paste PGN master games into the training panel. PGN training uses
+the game result as the value target and the actual game move as the policy
+target, so it can imitate master move choices instead of only learning from
+self-play outcomes.
 
 The board includes an evaluation bar on the left, similar in spirit to common
 chess sites. It uses the current ResNet value model to estimate the position
@@ -77,7 +83,7 @@ as `0.0005` make updates more conservative.
 The current model is saved locally to:
 
 ```text
-models/resnet_value.pt
+models/resnet_policy_value.pt
 ```
 
 ## Move Input

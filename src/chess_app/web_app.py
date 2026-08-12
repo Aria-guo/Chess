@@ -324,14 +324,27 @@ INDEX_HTML = r"""
       font-weight: 700;
     }
 
-    input[type="number"] {
+    input[type="number"],
+    textarea {
       width: 100%;
-      min-height: 40px;
       border: 1px solid var(--line);
       padding: 8px 10px;
       font: inherit;
       color: var(--ink);
       background: #fff;
+    }
+
+    input[type="number"] {
+      min-height: 40px;
+    }
+
+    textarea {
+      grid-column: 1 / -1;
+      min-height: 128px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.4;
     }
 
     .train-button {
@@ -342,6 +355,11 @@ INDEX_HTML = r"""
       min-height: 42px;
       font-weight: 800;
       cursor: pointer;
+    }
+
+    .train-button.alt {
+      background: #6b4c9a;
+      border-color: #6b4c9a;
     }
 
     .train-button:disabled {
@@ -404,8 +422,9 @@ INDEX_HTML = r"""
         <div class="row"><span>You</span><strong id="human-color">white</strong></div>
         <div class="row"><span>Turn</span><strong id="turn">white</strong></div>
         <div class="row"><span>Status</span><strong id="status">Loading</strong></div>
-        <div class="row"><span>Book</span><strong id="book">search</strong></div>
-        <div class="row"><span>Eval</span><strong id="eval">+0.00</strong></div>
+          <div class="row"><span>Book</span><strong id="book">search</strong></div>
+          <div class="row"><span>Eval</span><strong id="eval">+0.00</strong></div>
+          <div class="row"><span>Policy</span><strong id="policy-best">-</strong></div>
       </div>
       <p class="message" id="message">Loading game...</p>
       <div class="move-list" id="moves"></div>
@@ -423,14 +442,22 @@ INDEX_HTML = r"""
             <input id="learning-rate" type="number" min="0.00001" max="0.1" step="0.0001" value="0.001">
           </label>
           <button class="train-button" type="button" id="train-button">Train model</button>
+          <label>Master PGN
+            <textarea id="pgn-input" spellcheck="false" placeholder='Paste PGN here, for example:&#10;[Event "Model game"]&#10;[Result "1-0"]&#10;&#10;1. d4 d5 2. c4 e6 3. Nc3 Nf6 1-0'></textarea>
+          </label>
+          <button class="train-button alt" type="button" id="pgn-train-button">Train from PGN</button>
         </div>
         <div class="training-status">
-          <div class="row"><span>Architecture</span><strong id="train-arch">ResNet CNN + value head</strong></div>
+          <div class="row"><span>Architecture</span><strong id="train-arch">ResNet CNN + policy/value heads</strong></div>
           <div class="row"><span>Device</span><strong id="train-device">-</strong></div>
           <div class="row"><span>Total games</span><strong id="train-total-games">0</strong></div>
           <div class="row"><span>Total rounds</span><strong id="train-total-rounds">0</strong></div>
           <div class="row"><span>Positions</span><strong id="train-positions">0</strong></div>
+          <div class="row"><span>PGN games</span><strong id="train-pgn-games">0</strong></div>
+          <div class="row"><span>PGN positions</span><strong id="train-pgn-positions">0</strong></div>
           <div class="row"><span>Last loss</span><strong id="train-loss">-</strong></div>
+          <div class="row"><span>Value loss</span><strong id="train-value-loss">-</strong></div>
+          <div class="row"><span>Policy loss</span><strong id="train-policy-loss">-</strong></div>
           <div class="row"><span>Learning rate</span><strong id="train-lr">0.001</strong></div>
         </div>
         <p class="hint" id="train-message">Neural trainer is idle.</p>
@@ -524,6 +551,7 @@ INDEX_HTML = r"""
       document.getElementById("status").textContent = state.status;
       document.getElementById("book").textContent = state.book || "search";
       document.getElementById("eval").textContent = state.evaluation.label;
+      document.getElementById("policy-best").textContent = state.policy.length ? state.policy[0].uci : "-";
       messageEl.textContent = state.message;
       document.getElementById("moves").textContent = state.moves.length ? state.moves.join("\n") : "No moves yet.";
       renderEvaluation(state.evaluation);
@@ -542,7 +570,11 @@ INDEX_HTML = r"""
       document.getElementById("train-total-games").textContent = training.total_self_play_games;
       document.getElementById("train-total-rounds").textContent = training.total_review_rounds;
       document.getElementById("train-positions").textContent = training.total_positions;
+      document.getElementById("train-pgn-games").textContent = training.total_pgn_games;
+      document.getElementById("train-pgn-positions").textContent = training.total_pgn_positions;
       document.getElementById("train-loss").textContent = training.last_loss === null ? "-" : training.last_loss.toFixed(4);
+      document.getElementById("train-value-loss").textContent = training.last_value_loss === null ? "-" : training.last_value_loss.toFixed(4);
+      document.getElementById("train-policy-loss").textContent = training.last_policy_loss === null ? "-" : training.last_policy_loss.toFixed(4);
       document.getElementById("train-lr").textContent = Number(training.learning_rate).toPrecision(3);
       const lrInput = document.getElementById("learning-rate");
       if (document.activeElement !== lrInput) {
@@ -550,6 +582,7 @@ INDEX_HTML = r"""
       }
       document.getElementById("train-message").textContent = training.message;
       document.getElementById("train-button").disabled = training.running;
+      document.getElementById("pgn-train-button").disabled = training.running;
     }
 
     async function clickSquare(square) {
@@ -588,9 +621,11 @@ INDEX_HTML = r"""
       if (state) {
         state.training = payload.training;
         state.evaluation = payload.evaluation;
+        state.policy = payload.policy;
         renderTraining(payload.training);
         renderEvaluation(payload.evaluation);
         document.getElementById("eval").textContent = payload.evaluation.label;
+        document.getElementById("policy-best").textContent = payload.policy.length ? payload.policy[0].uci : "-";
       }
     }
 
@@ -605,12 +640,28 @@ INDEX_HTML = r"""
       }
     }
 
+    async function startPgnTraining() {
+      const pgn = document.getElementById("pgn-input").value;
+      const reviewRounds = Number(document.getElementById("train-rounds").value || 1);
+      const learningRate = Number(document.getElementById("learning-rate").value || 0.001);
+      const training = await api("/api/train-pgn", {pgn, review_rounds: reviewRounds, learning_rate: learningRate});
+      if (state) {
+        state.training = training;
+        renderTraining(training);
+      }
+    }
+
     document.querySelectorAll("[data-new]").forEach(button => {
       button.addEventListener("click", () => newGame(button.dataset.new));
     });
     document.getElementById("new-game").addEventListener("click", () => newGame(state?.human_color || "white"));
     document.getElementById("train-button").addEventListener("click", () => {
       startTraining().catch(error => {
+        document.getElementById("train-message").textContent = error.message;
+      });
+    });
+    document.getElementById("pgn-train-button").addEventListener("click", () => {
+      startPgnTraining().catch(error => {
         document.getElementById("train-message").textContent = error.message;
       });
     });
@@ -683,7 +734,7 @@ class WebSession:
         self.moves.append(f"AI: {san}")
         self.message = f"AI played {san}" + (f" ({book_name})." if book_name else ".")
 
-    def state(self, evaluation: dict | None = None) -> dict:
+    def state(self, evaluation: dict | None = None, policy: list[dict] | None = None) -> dict:
         board = self.game.board
         files = list(range(8)) if self.game.human_color is PlayerColor.WHITE else list(range(7, -1, -1))
         ranks = list(range(7, -1, -1)) if self.game.human_color is PlayerColor.WHITE else list(range(8))
@@ -714,6 +765,7 @@ class WebSession:
             "status": self.game.status(),
             "book": self.ai.last_book_name,
             "evaluation": evaluation or {"white_value": 0.0, "white_percent": 50.0, "black_percent": 50.0, "label": "+0.00"},
+            "policy": policy or [],
             "message": self.message,
             "files": [chess.FILE_NAMES[file_index] for file_index in files],
             "squares": squares,
@@ -751,7 +803,10 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
 
     @app.get("/api/state")
     def state():
-        payload = session.state(evaluation=trainer.evaluation_payload(session.game.board))
+        payload = session.state(
+            evaluation=trainer.evaluation_payload(session.game.board),
+            policy=trainer.policy_payload(session.game.board),
+        )
         payload["training"] = trainer.payload()
         return jsonify(payload)
 
@@ -759,7 +814,10 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
     def new_game():
         payload = request.get_json(silent=True) or {}
         session.reset(parse_color(payload.get("color", "white")))
-        response = session.state(evaluation=trainer.evaluation_payload(session.game.board))
+        response = session.state(
+            evaluation=trainer.evaluation_payload(session.game.board),
+            policy=trainer.policy_payload(session.game.board),
+        )
         response["training"] = trainer.payload()
         return jsonify(response)
 
@@ -770,7 +828,10 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
             session.play_human_move(str(payload.get("from", "")), str(payload.get("to", "")))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        response = session.state(evaluation=trainer.evaluation_payload(session.game.board))
+        response = session.state(
+            evaluation=trainer.evaluation_payload(session.game.board),
+            policy=trainer.policy_payload(session.game.board),
+        )
         response["training"] = trainer.payload()
         return jsonify(response)
 
@@ -780,6 +841,7 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
             {
                 "training": trainer.payload(),
                 "evaluation": trainer.evaluation_payload(session.game.board),
+                "policy": trainer.policy_payload(session.game.board),
             }
         )
 
@@ -791,6 +853,25 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
         learning_rate = float(payload.get("learning_rate", 0.001))
         started = trainer.start_background_training(
             games=games,
+            review_rounds=review_rounds,
+            learning_rate=learning_rate,
+        )
+        response = trainer.payload()
+        if not started:
+            response["message"] = "Training is already running."
+            return jsonify(response), 409
+        return jsonify(response)
+
+    @app.post("/api/train-pgn")
+    def train_pgn():
+        payload = request.get_json(silent=True) or {}
+        pgn_text = str(payload.get("pgn", ""))
+        review_rounds = int(payload.get("review_rounds", 30))
+        learning_rate = float(payload.get("learning_rate", 0.001))
+        if not pgn_text.strip():
+            return jsonify({"error": "Paste at least one PGN game first."}), 400
+        started = trainer.start_background_pgn_training(
+            pgn_text=pgn_text,
             review_rounds=review_rounds,
             learning_rate=learning_rate,
         )
