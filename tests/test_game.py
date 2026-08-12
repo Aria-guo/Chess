@@ -39,6 +39,29 @@ def test_basic_ai_prefers_winning_material():
     assert ai.choose_move(board) == chess.Move.from_uci("e4d5")
 
 
+def test_opening_book_starts_queen_gambit_as_white():
+    board = chess.Board()
+    ai = BasicAI(seed=7)
+
+    assert ai.choose_move(board) == chess.Move.from_uci("d2d4")
+
+
+def test_opening_book_plays_sicilian_against_king_pawn():
+    board = chess.Board()
+    board.push_san("e4")
+    ai = BasicAI(seed=7)
+
+    assert ai.choose_move(board) == chess.Move.from_uci("c7c5")
+
+
+def test_opening_book_plays_dutch_against_queen_pawn():
+    board = chess.Board()
+    board.push_san("d4")
+    ai = BasicAI(seed=7)
+
+    assert ai.choose_move(board) == chess.Move.from_uci("f7f5")
+
+
 def test_black_human_means_ai_starts():
     game = ChessGame(human_color=PlayerColor.BLACK)
 

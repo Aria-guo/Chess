@@ -18,7 +18,8 @@ PIECES = {
     chess.KING: ("♔", "♚"),
 }
 
-SQUARE_WIDTH = 4
+SQUARE_WIDTH = 8
+SQUARE_HEIGHT = 4
 LIGHT_SQUARE = "#f0d9b5"
 DARK_SQUARE = "#b58863"
 
@@ -41,8 +42,7 @@ def render_board(board: chess.Board, perspective: PlayerColor) -> Panel:
     board_text.append("\n")
 
     for rank_index in ranks:
-        top_line = Text(f" {rank_index + 1}  ")
-        piece_line = Text("    ")
+        square_lines = [Text(f" {rank_index + 1}  " if line == 1 else "    ") for line in range(SQUARE_HEIGHT)]
         for file_index in files:
             square = chess.square(file_index, rank_index)
             is_light = (rank_index + file_index) % 2 == 0
@@ -50,19 +50,21 @@ def render_board(board: chess.Board, perspective: PlayerColor) -> Panel:
             square_style = f"on {background}"
             piece = board.piece_at(square)
 
-            top_line.append(" " * SQUARE_WIDTH, style=square_style)
-            if piece is None:
-                piece_line.append(" " * SQUARE_WIDTH, style=square_style)
-            else:
-                fg = "white" if piece.color == chess.WHITE else "black"
-                piece_line.append(" ", style=square_style)
-                piece_line.append(piece_symbol(piece), style=f"bold {fg} on {background}")
-                piece_line.append("  ", style=square_style)
+            for line_index, line in enumerate(square_lines):
+                if piece is not None and line_index == SQUARE_HEIGHT // 2:
+                    fg = "white" if piece.color == chess.WHITE else "black"
+                    left = (SQUARE_WIDTH - 1) // 2
+                    right = SQUARE_WIDTH - left - 1
+                    line.append(" " * left, style=square_style)
+                    line.append(piece_symbol(piece), style=f"bold {fg} on {background}")
+                    line.append(" " * right, style=square_style)
+                else:
+                    line.append(" " * SQUARE_WIDTH, style=square_style)
 
-        top_line.append(f"  {rank_index + 1}\n")
-        piece_line.append("\n")
-        board_text.append_text(top_line)
-        board_text.append_text(piece_line)
+        for line_index, line in enumerate(square_lines):
+            line.append(f"  {rank_index + 1}" if line_index == 1 else "")
+            line.append("\n")
+            board_text.append_text(line)
 
     board_text.append("    ")
     for file_index in files:
@@ -71,7 +73,7 @@ def render_board(board: chess.Board, perspective: PlayerColor) -> Panel:
     return Panel(board_text, title="Board", border_style="cyan", expand=False)
 
 
-def render_info(game: ChessGame, last_ai_move: str | None) -> Panel:
+def render_info(game: ChessGame, last_ai_move: str | None, book_name: str | None = None) -> Panel:
     turn = "White" if game.board.turn == chess.WHITE else "Black"
     human = "White" if game.human_color is PlayerColor.WHITE else "Black"
     legal_count = game.board.legal_moves.count()
@@ -83,6 +85,7 @@ def render_info(game: ChessGame, last_ai_move: str | None) -> Panel:
     ]
     if last_ai_move:
         lines.append(f"AI last move: {last_ai_move}")
+    lines.append(f"Book: {book_name or 'search'}")
     lines.append("Input: e2e4, Nf3, O-O, resign, quit")
     return Panel("\n".join(lines), title="Chess", border_style="cyan")
 
@@ -92,16 +95,18 @@ def run_terminal(human_color: PlayerColor = PlayerColor.WHITE) -> None:
     game = ChessGame(human_color=human_color)
     ai = BasicAI()
     last_ai_move: str | None = None
+    last_book_name: str | None = None
 
     while not game.board.is_game_over(claim_draw=True):
         console.clear()
         console.print(render_board(game.board, game.human_color))
-        console.print(render_info(game, last_ai_move))
+        console.print(render_info(game, last_ai_move, last_book_name))
 
         if game.is_ai_turn:
             move = ai.choose_move(game.board)
             if move is None:
                 break
+            last_book_name = ai.last_book_name
             last_ai_move = game.push_ai_move(move)
             continue
 
@@ -121,5 +126,5 @@ def run_terminal(human_color: PlayerColor = PlayerColor.WHITE) -> None:
 
     console.clear()
     console.print(render_board(game.board, game.human_color))
-    console.print(render_info(game, last_ai_move))
+    console.print(render_info(game, last_ai_move, last_book_name))
     console.print(f"[bold]Result: {game.result() or game.status()}[/]")

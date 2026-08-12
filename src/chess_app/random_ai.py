@@ -4,6 +4,8 @@ import random
 
 import chess
 
+from chess_app.opening_book import OpeningBook, build_default_opening_book
+
 
 PIECE_VALUES = {
     chess.PAWN: 100,
@@ -58,11 +60,24 @@ class BasicAI(RandomAI):
     control.
     """
 
-    def __init__(self, seed: int | None = None, search_depth: int = 2) -> None:
+    def __init__(
+        self,
+        seed: int | None = None,
+        search_depth: int = 2,
+        opening_book: OpeningBook | None = None,
+    ) -> None:
         super().__init__(seed=seed)
         self.search_depth = search_depth
+        self.opening_book = opening_book or build_default_opening_book(seed=seed)
+        self.last_book_name: str | None = None
 
     def choose_move(self, board: chess.Board) -> chess.Move | None:
+        self.last_book_name = None
+        book_move = self.opening_book.choose(board)
+        if book_move is not None:
+            self.last_book_name = book_move.name
+            return book_move.move
+
         legal_moves = list(board.legal_moves)
         if not legal_moves:
             return None

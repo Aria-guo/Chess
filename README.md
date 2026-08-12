@@ -7,6 +7,7 @@ A clean terminal chess project. The first version is deliberately simple:
 - Square terminal board with black and white Unicode pieces
 - Text input such as `e2e4`, `Nf3`, `O-O`, `quit`
 - Optional Textual UI with mouse/touch-friendly square selection
+- Built-in repertoire opening book
 
 ## Setup
 
@@ -36,6 +37,9 @@ Mouse/touch-friendly Textual mode:
 python -m chess_app --tui
 ```
 
+The Textual mode supports clicking the source square and target square. It also
+has buttons to choose whether you play White or Black.
+
 ## Move Input
 
 You can enter moves in UCI or SAN:
@@ -56,3 +60,18 @@ quit
 3. Add opening-book support.
 4. Add self-play data generation.
 5. Add neural network policy/value model.
+
+## Opening Repertoire
+
+The built-in book gives the AI a clear style before search takes over:
+
+- As White: Queen's Gambit lines, including declined, exchange, accepted, Slav,
+  Semi-Slav, Tarrasch, Albin, and Chigorin structures.
+- As Black against `1.e4`: Sicilian Defense lines, including Najdorf,
+  Classical, Dragon, Accelerated Dragon, Kan, Alapin, and Closed Sicilian.
+- As Black against `1.d4`, `1.c4`, or `1.Nf3`: Dutch Defense and related
+  Classical/Leningrad setups.
+
+This is a curated starter repertoire, not a claim of theoretical perfection.
+The next step is importing large PGN files and using engine/database statistics
+to expand move weights automatically.
