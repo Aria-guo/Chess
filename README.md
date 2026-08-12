@@ -69,10 +69,10 @@ and trains a small ResNet CNN with both a policy head and a value head.
 Cumulative training games, review rounds, positions, device, value loss, policy
 loss, and latest combined loss are shown in the page.
 
-You can also paste PGN master games into the training panel. PGN training uses
-the game result as the value target and the actual game move as the policy
-target, so it can imitate master move choices instead of only learning from
-self-play outcomes.
+You can also paste PGN master games into the training panel or load a `.pgn`
+file directly with the PGN file picker. PGN training uses the game result as
+the value target and the actual game move as the policy target, so it can
+imitate master move choices instead of only learning from self-play outcomes.
 
 The board includes an evaluation bar on the left, similar in spirit to common
 chess sites. It uses the current ResNet value model to estimate the position

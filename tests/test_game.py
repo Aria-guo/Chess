@@ -121,6 +121,16 @@ def test_web_training_status_available():
     assert 0 <= payload["evaluation"]["white_percent"] <= 100
 
 
+def test_web_home_includes_pgn_file_import():
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="pgn-file"' in response.get_data(as_text=True)
+
+
 def test_web_state_includes_evaluation_bar_data():
     app = create_app()
     client = app.test_client()

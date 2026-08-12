@@ -325,6 +325,7 @@ INDEX_HTML = r"""
     }
 
     input[type="number"],
+    input[type="file"],
     textarea {
       width: 100%;
       border: 1px solid var(--line);
@@ -334,8 +335,14 @@ INDEX_HTML = r"""
       background: #fff;
     }
 
-    input[type="number"] {
+    input[type="number"],
+    input[type="file"] {
       min-height: 40px;
+    }
+
+    input[type="file"] {
+      padding: 7px 10px;
+      cursor: pointer;
     }
 
     textarea {
@@ -442,6 +449,9 @@ INDEX_HTML = r"""
             <input id="learning-rate" type="number" min="0.00001" max="0.1" step="0.0001" value="0.001">
           </label>
           <button class="train-button" type="button" id="train-button">Train model</button>
+          <label>PGN file
+            <input id="pgn-file" type="file" accept=".pgn,.txt,text/plain,application/x-chess-pgn">
+          </label>
           <label>Master PGN
             <textarea id="pgn-input" spellcheck="false" placeholder='Paste PGN here, for example:&#10;[Event "Model game"]&#10;[Result "1-0"]&#10;&#10;1. d4 d5 2. c4 e6 3. Nc3 Nf6 1-0'></textarea>
           </label>
@@ -583,6 +593,7 @@ INDEX_HTML = r"""
       document.getElementById("train-message").textContent = training.message;
       document.getElementById("train-button").disabled = training.running;
       document.getElementById("pgn-train-button").disabled = training.running;
+      document.getElementById("pgn-file").disabled = training.running;
     }
 
     async function clickSquare(square) {
@@ -651,6 +662,13 @@ INDEX_HTML = r"""
       }
     }
 
+    async function loadPgnFile(file) {
+      if (!file) return;
+      const text = await file.text();
+      document.getElementById("pgn-input").value = text;
+      document.getElementById("train-message").textContent = `Loaded ${file.name} (${text.length.toLocaleString()} characters).`;
+    }
+
     document.querySelectorAll("[data-new]").forEach(button => {
       button.addEventListener("click", () => newGame(button.dataset.new));
     });
@@ -662,6 +680,11 @@ INDEX_HTML = r"""
     });
     document.getElementById("pgn-train-button").addEventListener("click", () => {
       startPgnTraining().catch(error => {
+        document.getElementById("train-message").textContent = error.message;
+      });
+    });
+    document.getElementById("pgn-file").addEventListener("change", event => {
+      loadPgnFile(event.target.files[0]).catch(error => {
         document.getElementById("train-message").textContent = error.message;
       });
     });
