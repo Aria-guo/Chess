@@ -6,10 +6,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "flask>=3.0",
+    "numpy>=2.0",
     "pygame>=2.6",
     "python-chess>=1.999",
     "rich>=13.7",
     "textual>=0.85",
+    "torch>=2.13",
 ]
 
 [project.optional-dependencies]

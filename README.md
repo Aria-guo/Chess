@@ -9,6 +9,7 @@ A clean terminal chess project. The first version is deliberately simple:
 - Optional Textual UI with mouse/touch-friendly square selection
 - Optional graphical mouse UI with large centered pieces
 - Local browser app with a responsive board and mouse controls
+- Browser self-training panel backed by a ResNet CNN value model
 - Built-in repertoire opening book
 
 ## Setup
@@ -59,6 +60,19 @@ python -m chess_app --web
 
 Then open `http://127.0.0.1:8765`. The web app uses the same Python rules,
 opening book, and AI search as the terminal app.
+
+The web app also includes a self-training panel. Enter a number of self-play
+games and review rounds, then start training. The trainer plays games between
+AI agents, labels each position from the side-to-move perspective using the
+final result, and trains a small ResNet CNN with a value head. Cumulative
+training games, review rounds, positions, device, and latest loss are shown in
+the page.
+
+The current model is saved locally to:
+
+```text
+models/resnet_value.pt
+```
 
 ## Move Input
 

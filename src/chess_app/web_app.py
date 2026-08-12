@@ -6,6 +6,7 @@ import chess
 from flask import Flask, jsonify, request
 
 from chess_app.game import ChessGame, PlayerColor
+from chess_app.neural_trainer import NeuralSelfTrainer
 from chess_app.random_ai import BasicAI
 from chess_app.terminal import piece_symbol
 
@@ -244,6 +245,65 @@ INDEX_HTML = r"""
       line-height: 1.45;
     }
 
+    .trainer {
+      margin-top: 18px;
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .trainer h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .train-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    input[type="number"] {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    .train-button {
+      grid-column: 1 / -1;
+      border: 1px solid #2c6d55;
+      background: #2c6d55;
+      color: #fff;
+      min-height: 42px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .train-button:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+
+    .training-status {
+      display: grid;
+      gap: 8px;
+      font-size: 14px;
+      padding: 10px 0;
+    }
+
     @media (max-width: 900px) {
       .app {
         grid-template-columns: 1fr;
@@ -283,6 +343,27 @@ INDEX_HTML = r"""
       <p class="message" id="message">Loading game...</p>
       <div class="move-list" id="moves"></div>
       <p class="hint">Click one of your pieces, then click a target square. Pawn promotion by click defaults to queen.</p>
+      <section class="trainer">
+        <h2>Self Training</h2>
+        <div class="train-grid">
+          <label>Games
+            <input id="train-games" type="number" min="1" max="1000" value="100">
+          </label>
+          <label>Review rounds
+            <input id="train-rounds" type="number" min="1" max="200" value="30">
+          </label>
+          <button class="train-button" type="button" id="train-button">Train model</button>
+        </div>
+        <div class="training-status">
+          <div class="row"><span>Architecture</span><strong id="train-arch">ResNet CNN + value head</strong></div>
+          <div class="row"><span>Device</span><strong id="train-device">-</strong></div>
+          <div class="row"><span>Total games</span><strong id="train-total-games">0</strong></div>
+          <div class="row"><span>Total rounds</span><strong id="train-total-rounds">0</strong></div>
+          <div class="row"><span>Positions</span><strong id="train-positions">0</strong></div>
+          <div class="row"><span>Last loss</span><strong id="train-loss">-</strong></div>
+        </div>
+        <p class="hint" id="train-message">Neural trainer is idle.</p>
+      </section>
     </aside>
   </main>
   <script>
@@ -373,6 +454,18 @@ INDEX_HTML = r"""
       document.getElementById("book").textContent = state.book || "search";
       messageEl.textContent = state.message;
       document.getElementById("moves").textContent = state.moves.length ? state.moves.join("\n") : "No moves yet.";
+      renderTraining(state.training);
+    }
+
+    function renderTraining(training) {
+      document.getElementById("train-arch").textContent = training.architecture;
+      document.getElementById("train-device").textContent = training.device;
+      document.getElementById("train-total-games").textContent = training.total_self_play_games;
+      document.getElementById("train-total-rounds").textContent = training.total_review_rounds;
+      document.getElementById("train-positions").textContent = training.total_positions;
+      document.getElementById("train-loss").textContent = training.last_loss === null ? "-" : training.last_loss.toFixed(4);
+      document.getElementById("train-message").textContent = training.message;
+      document.getElementById("train-button").disabled = training.running;
     }
 
     async function clickSquare(square) {
@@ -406,10 +499,34 @@ INDEX_HTML = r"""
       render();
     }
 
+    async function refreshTraining() {
+      const training = await api("/api/training");
+      if (state) {
+        state.training = training;
+        renderTraining(training);
+      }
+    }
+
+    async function startTraining() {
+      const games = Number(document.getElementById("train-games").value || 1);
+      const reviewRounds = Number(document.getElementById("train-rounds").value || 1);
+      const training = await api("/api/train", {games, review_rounds: reviewRounds});
+      if (state) {
+        state.training = training;
+        renderTraining(training);
+      }
+    }
+
     document.querySelectorAll("[data-new]").forEach(button => {
       button.addEventListener("click", () => newGame(button.dataset.new));
     });
     document.getElementById("new-game").addEventListener("click", () => newGame(state?.human_color || "white"));
+    document.getElementById("train-button").addEventListener("click", () => {
+      startTraining().catch(error => {
+        document.getElementById("train-message").textContent = error.message;
+      });
+    });
+    setInterval(() => refreshTraining().catch(() => {}), 1500);
 
     loadState().catch(error => {
       messageEl.textContent = error.message;
@@ -536,6 +653,7 @@ def parse_color(value: str) -> PlayerColor:
 def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
     app = Flask(__name__)
     session = WebSession()
+    trainer = NeuralSelfTrainer()
     session.reset(human_color)
 
     @app.get("/")
@@ -544,13 +662,17 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
 
     @app.get("/api/state")
     def state():
-        return jsonify(session.state())
+        payload = session.state()
+        payload["training"] = trainer.payload()
+        return jsonify(payload)
 
     @app.post("/api/new")
     def new_game():
         payload = request.get_json(silent=True) or {}
         session.reset(parse_color(payload.get("color", "white")))
-        return jsonify(session.state())
+        response = session.state()
+        response["training"] = trainer.payload()
+        return jsonify(response)
 
     @app.post("/api/move")
     def move():
@@ -559,7 +681,25 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
             session.play_human_move(str(payload.get("from", "")), str(payload.get("to", "")))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify(session.state())
+        response = session.state()
+        response["training"] = trainer.payload()
+        return jsonify(response)
+
+    @app.get("/api/training")
+    def training():
+        return jsonify(trainer.payload())
+
+    @app.post("/api/train")
+    def train():
+        payload = request.get_json(silent=True) or {}
+        games = int(payload.get("games", 100))
+        review_rounds = int(payload.get("review_rounds", 30))
+        started = trainer.start_background_training(games=games, review_rounds=review_rounds)
+        response = trainer.payload()
+        if not started:
+            response["message"] = "Training is already running."
+            return jsonify(response), 409
+        return jsonify(response)
 
     return app
 
@@ -567,4 +707,3 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
 def run_web(host: str = "127.0.0.1", port: int = 8765, human_color: PlayerColor = PlayerColor.WHITE) -> None:
     app = create_app(human_color=human_color)
     app.run(host=host, port=port, debug=False)
-

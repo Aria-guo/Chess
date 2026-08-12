@@ -1,6 +1,7 @@
 import chess
 
 from chess_app.game import ChessGame, PlayerColor
+from chess_app.neural_trainer import ResNetValueNet, encode_board
 from chess_app.random_ai import BasicAI, RandomAI
 from chess_app.web_app import create_app
 
@@ -93,3 +94,26 @@ def test_web_app_black_choice_gets_ai_opening_move():
     assert response.status_code == 200
     assert payload["human_color"] == "black"
     assert payload["moves"][0].startswith("AI:")
+
+
+def test_resnet_value_head_outputs_one_value():
+    game = ChessGame()
+    tensor = encode_board(game.board).unsqueeze(0)
+    model = ResNetValueNet(channels=16, blocks=1)
+
+    output = model(tensor)
+
+    assert tensor.shape == (1, 18, 8, 8)
+    assert output.shape == (1,)
+
+
+def test_web_training_status_available():
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/api/training")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["architecture"] == "ResNet CNN + value head"
+    assert "total_self_play_games" in payload
