@@ -118,6 +118,8 @@ def test_web_training_status_available():
     assert response.status_code == 200
     assert payload["training"]["architecture"] == "ResNet CNN + policy head + value head"
     assert "total_self_play_games" in payload["training"]
+    assert "active_games" in payload["training"]
+    assert "active_review_round" in payload["training"]
     assert 0 <= payload["evaluation"]["white_percent"] <= 100
 
 
@@ -181,6 +183,26 @@ def test_pgn_games_can_be_converted_to_value_samples(tmp_path):
     assert len(samples) == 4
     assert samples[0][0].shape == (18, 8, 8)
     assert isinstance(samples[0][2], int)
+
+
+def test_pgn_parsing_updates_progress_stats(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"))
+    pgn = """
+[Event "Short"]
+[Result "0-1"]
+
+1. f3 e5 2. g4 Qh4# 0-1
+"""
+
+    samples, game_count = trainer.generate_pgn_samples(pgn)
+    payload = trainer.payload()
+
+    assert game_count == 1
+    assert len(samples) == 4
+    assert payload["total_pgn_games"] == 1
+    assert payload["total_pgn_positions"] == 4
+    assert payload["active_games"] == 1
+    assert payload["active_positions"] == 4
 
 
 def test_move_policy_index_handles_promotions():

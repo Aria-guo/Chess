@@ -69,7 +69,9 @@ and trains a small ResNet CNN with both a policy head and a value head.
 Cumulative training games, review rounds, positions, device, value loss, policy
 loss, and latest combined loss are shown in the page. A larger statistics panel
 below the board summarizes self-play games, total trained games, PGN master
-games, review rounds, and trained positions.
+games, review rounds, and trained positions. During long PGN imports the
+statistics update as games are parsed, and the page shows the active task,
+current imported games, current positions, and review-round progress.
 
 You can also paste PGN master games into the training panel or load a `.pgn`
 file directly with the PGN file picker. PGN training uses the game result as

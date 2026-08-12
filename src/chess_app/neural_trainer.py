@@ -112,6 +112,11 @@ class TrainingStats:
     model_path: str = "models/resnet_policy_value.pt"
     learning_rate: float = 0.001
     recent_losses: list[float] = field(default_factory=list)
+    active_task: str = "idle"
+    active_games: int = 0
+    active_positions: int = 0
+    active_review_round: int = 0
+    active_review_rounds: int = 0
 
     def payload(self) -> dict:
         return {
@@ -128,6 +133,11 @@ class TrainingStats:
             "model_path": self.model_path,
             "learning_rate": self.learning_rate,
             "recent_losses": self.recent_losses[-20:],
+            "active_task": self.active_task,
+            "active_games": self.active_games,
+            "active_positions": self.active_positions,
+            "active_review_round": self.active_review_round,
+            "active_review_rounds": self.active_review_rounds,
         }
 
 
@@ -201,6 +211,11 @@ class NeuralSelfTrainer:
                     group["lr"] = learning_rate
                 self.stats.learning_rate = learning_rate
             self.stats.running = True
+            self.stats.active_task = "self-play"
+            self.stats.active_games = 0
+            self.stats.active_positions = 0
+            self.stats.active_review_round = 0
+            self.stats.active_review_rounds = max(1, min(int(review_rounds), 200))
             self.stats.message = (
                 f"Starting self-play: {games} games, {review_rounds} review rounds, "
                 f"lr {self.stats.learning_rate:g}."
@@ -229,6 +244,11 @@ class NeuralSelfTrainer:
                     group["lr"] = learning_rate
                 self.stats.learning_rate = learning_rate
             self.stats.running = True
+            self.stats.active_task = "pgn"
+            self.stats.active_games = 0
+            self.stats.active_positions = 0
+            self.stats.active_review_round = 0
+            self.stats.active_review_rounds = max(1, min(int(review_rounds), 200))
             self.stats.message = (
                 f"Starting PGN review: {review_rounds} rounds, "
                 f"lr {self.stats.learning_rate:g}."
@@ -253,9 +273,7 @@ class NeuralSelfTrainer:
             self.train_samples(samples, review_rounds, "Self-play review")
 
             with self.lock:
-                self.stats.total_self_play_games += games
                 self.stats.total_review_rounds += review_rounds
-                self.stats.total_positions += len(samples)
                 self.stats.message = f"Finished {games} self-play games and {review_rounds} review rounds."
             self.save()
         except Exception as exc:
@@ -264,6 +282,9 @@ class NeuralSelfTrainer:
         finally:
             with self.lock:
                 self.stats.running = False
+                self.stats.active_task = "idle"
+                self.stats.active_review_round = 0
+                self.stats.active_review_rounds = 0
 
     def train_pgn_text(self, pgn_text: str, review_rounds: int) -> None:
         try:
@@ -276,9 +297,6 @@ class NeuralSelfTrainer:
 
             with self.lock:
                 self.stats.total_review_rounds += review_rounds
-                self.stats.total_positions += len(samples)
-                self.stats.total_pgn_games += game_count
-                self.stats.total_pgn_positions += len(samples)
                 self.stats.message = (
                     f"Finished PGN review: {game_count} games, "
                     f"{len(samples)} positions, {review_rounds} rounds."
@@ -290,6 +308,9 @@ class NeuralSelfTrainer:
         finally:
             with self.lock:
                 self.stats.running = False
+                self.stats.active_task = "idle"
+                self.stats.active_review_round = 0
+                self.stats.active_review_rounds = 0
 
     def train_samples(
         self,
@@ -335,6 +356,7 @@ class NeuralSelfTrainer:
                 self.stats.last_value_loss = avg_value_loss
                 self.stats.last_policy_loss = avg_policy_loss
                 self.stats.recent_losses.append(avg_loss)
+                self.stats.active_review_round = round_index + 1
                 self.stats.message = (
                     f"{label} {round_index + 1}/{review_rounds}, "
                     f"loss {avg_loss:.4f}, value {avg_value_loss:.4f}, policy {avg_policy_loss:.4f}."
@@ -362,6 +384,15 @@ class NeuralSelfTrainer:
                 result = adjudicated_result(board)
             for position, turn, move in history:
                 samples.append((encode_board(position), outcome_value(result, turn), move_to_policy_index(move)))
+            with self.lock:
+                self.stats.total_self_play_games += 1
+                self.stats.total_positions += len(history)
+                self.stats.active_games += 1
+                self.stats.active_positions += len(history)
+                self.stats.message = (
+                    f"Self-play generated {self.stats.active_games}/{games} games, "
+                    f"{self.stats.active_positions} positions."
+                )
         return samples
 
     def choose_self_play_move(self, board: chess.Board, fallback_ai: BasicAI) -> chess.Move | None:
@@ -410,8 +441,20 @@ class NeuralSelfTrainer:
             if not history:
                 continue
             game_count += 1
+            position_count = 0
             for position, turn, move in history:
                 samples.append((encode_board(position), outcome_value(result, turn), move_to_policy_index(move)))
+                position_count += 1
+            with self.lock:
+                self.stats.total_pgn_games += 1
+                self.stats.total_pgn_positions += position_count
+                self.stats.total_positions += position_count
+                self.stats.active_games += 1
+                self.stats.active_positions += position_count
+                self.stats.message = (
+                    f"Loaded {self.stats.active_games} PGN games, "
+                    f"{self.stats.active_positions} positions. Review will start after parsing."
+                )
 
         return samples, game_count
 

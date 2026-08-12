@@ -545,6 +545,22 @@ INDEX_HTML = r"""
           <strong id="stats-review-rounds">0</strong>
         </div>
         <div class="stat">
+          <span>Current task</span>
+          <strong id="stats-active-task">idle</strong>
+        </div>
+        <div class="stat">
+          <span>Current games</span>
+          <strong id="stats-active-games">0</strong>
+        </div>
+        <div class="stat">
+          <span>Current positions</span>
+          <strong id="stats-active-positions">0</strong>
+        </div>
+        <div class="stat">
+          <span>Review progress</span>
+          <strong id="stats-review-progress">0/0</strong>
+        </div>
+        <div class="stat">
           <span>Total positions</span>
           <strong id="stats-total-positions">0</strong>
         </div>
@@ -671,8 +687,15 @@ INDEX_HTML = r"""
       return value === null ? "-" : Number(value).toFixed(4);
     }
 
+    function formatTask(value) {
+      if (value === "pgn") return "PGN";
+      if (value === "self-play") return "Self-play";
+      return "Idle";
+    }
+
     function renderTraining(training) {
       const totalTrainedGames = Number(training.total_self_play_games || 0) + Number(training.total_pgn_games || 0);
+      const reviewProgress = `${formatInteger(training.active_review_round)}/${formatInteger(training.active_review_rounds)}`;
       document.getElementById("train-arch").textContent = training.architecture;
       document.getElementById("train-device").textContent = training.device;
       document.getElementById("train-total-games").textContent = training.total_self_play_games;
@@ -687,6 +710,10 @@ INDEX_HTML = r"""
       document.getElementById("stats-total-trained-games").textContent = formatInteger(totalTrainedGames);
       document.getElementById("stats-pgn-games").textContent = formatInteger(training.total_pgn_games);
       document.getElementById("stats-review-rounds").textContent = formatInteger(training.total_review_rounds);
+      document.getElementById("stats-active-task").textContent = formatTask(training.active_task);
+      document.getElementById("stats-active-games").textContent = formatInteger(training.active_games);
+      document.getElementById("stats-active-positions").textContent = formatInteger(training.active_positions);
+      document.getElementById("stats-review-progress").textContent = reviewProgress;
       document.getElementById("stats-total-positions").textContent = formatInteger(training.total_positions);
       document.getElementById("stats-pgn-positions").textContent = formatInteger(training.total_pgn_positions);
       document.getElementById("stats-value-loss").textContent = formatLoss(training.last_value_loss);
