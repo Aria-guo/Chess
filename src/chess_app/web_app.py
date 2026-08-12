@@ -947,10 +947,10 @@ def parse_color(value: str) -> PlayerColor:
     return PlayerColor.BLACK if value == "black" else PlayerColor.WHITE
 
 
-def create_app(human_color: PlayerColor = PlayerColor.WHITE) -> Flask:
+def create_app(human_color: PlayerColor = PlayerColor.WHITE, trainer: NeuralSelfTrainer | None = None) -> Flask:
     app = Flask(__name__)
     session = WebSession()
-    trainer = NeuralSelfTrainer()
+    trainer = trainer or NeuralSelfTrainer()
     session.reset(human_color)
 
     @app.get("/")

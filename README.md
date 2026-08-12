@@ -94,6 +94,13 @@ The current model is saved locally to:
 models/resnet_policy_value.pt
 ```
 
+Training statistics are saved separately from the model weights, so replacing a
+bad checkpoint does not erase the counters shown on the web page:
+
+```text
+models/training_stats.json
+```
+
 ## Move Input
 
 You can enter moves in UCI or SAN:

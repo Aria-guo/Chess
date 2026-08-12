@@ -191,6 +191,22 @@ def test_learning_rate_can_be_adjusted(tmp_path):
     assert trainer.payload()["learning_rate"] == 0.0005
 
 
+def test_training_stats_persist_independently_from_model(tmp_path):
+    model_path = tmp_path / "model.pt"
+    stats_path = tmp_path / "training_stats.json"
+    trainer = NeuralSelfTrainer(model_path=str(model_path), stats_path=str(stats_path))
+    trainer.stats.total_pgn_games = 12
+    trainer.stats.total_self_play_games = 3
+    trainer.stats.total_review_rounds = 7
+
+    trainer.save_stats()
+    restored = NeuralSelfTrainer(model_path=str(tmp_path / "fresh_model.pt"), stats_path=str(stats_path))
+
+    assert restored.payload()["total_pgn_games"] == 12
+    assert restored.payload()["total_self_play_games"] == 3
+    assert restored.payload()["total_review_rounds"] == 7
+
+
 def test_pgn_games_can_be_converted_to_value_samples(tmp_path):
     trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"))
     pgn = """
@@ -234,8 +250,9 @@ def test_move_policy_index_handles_promotions():
     assert 0 <= move_to_policy_index(move) < MOVE_POLICY_SIZE
 
 
-def test_web_pgn_training_requires_pgn_text():
-    app = create_app()
+def test_web_pgn_training_requires_pgn_text(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    app = create_app(trainer=trainer)
     client = app.test_client()
 
     response = client.post("/api/train-pgn", json={"pgn": ""})
@@ -243,8 +260,9 @@ def test_web_pgn_training_requires_pgn_text():
     assert response.status_code == 400
 
 
-def test_web_pgn_training_can_start():
-    app = create_app()
+def test_web_pgn_training_can_start(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    app = create_app(trainer=trainer)
     client = app.test_client()
     pgn = """
 [Event "Short"]
@@ -260,8 +278,9 @@ def test_web_pgn_training_can_start():
     assert payload["running"] is True
 
 
-def test_web_pgn_training_uses_fixed_preset():
-    app = create_app()
+def test_web_pgn_training_uses_fixed_preset(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    app = create_app(trainer=trainer)
     client = app.test_client()
     pgn = """
 [Event "Short"]

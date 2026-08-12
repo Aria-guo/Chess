@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from io import StringIO
 from dataclasses import dataclass, field
@@ -150,7 +151,7 @@ class TrainingStats:
 
 
 class NeuralSelfTrainer:
-    def __init__(self, model_path: str = "models/resnet_policy_value.pt") -> None:
+    def __init__(self, model_path: str = "models/resnet_policy_value.pt", stats_path: str | None = None) -> None:
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         self.model = ResNetPolicyValueNet().to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
@@ -158,8 +159,10 @@ class NeuralSelfTrainer:
         self.lock = threading.Lock()
         self.model_lock = threading.Lock()
         self.model_path = Path(model_path)
+        self.stats_path = Path(stats_path) if stats_path is not None else self.model_path.with_name("training_stats.json")
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         self.load_if_available()
+        self.load_stats_if_available()
 
     def load_if_available(self) -> None:
         if not self.model_path.exists():
@@ -184,6 +187,41 @@ class NeuralSelfTrainer:
         self.stats.message = "Loaded existing ResNet policy/value model."
         self.set_learning_rate(self.stats.learning_rate)
 
+    def load_stats_if_available(self) -> None:
+        if not self.stats_path.exists():
+            return
+        try:
+            data = json.loads(self.stats_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            self.stats.message = "Stats file could not be read; using model checkpoint stats."
+            return
+
+        self.stats.total_self_play_games = int(data.get("total_self_play_games", self.stats.total_self_play_games))
+        self.stats.total_review_rounds = int(data.get("total_review_rounds", self.stats.total_review_rounds))
+        self.stats.total_positions = int(data.get("total_positions", self.stats.total_positions))
+        self.stats.total_pgn_games = int(data.get("total_pgn_games", self.stats.total_pgn_games))
+        self.stats.total_pgn_positions = int(data.get("total_pgn_positions", self.stats.total_pgn_positions))
+        self.stats.last_loss = data.get("last_loss", self.stats.last_loss)
+        self.stats.last_value_loss = data.get("last_value_loss", self.stats.last_value_loss)
+        self.stats.last_policy_loss = data.get("last_policy_loss", self.stats.last_policy_loss)
+        self.stats.learning_rate = float(data.get("learning_rate", self.stats.learning_rate))
+        self.stats.recent_losses = list(data.get("recent_losses", self.stats.recent_losses))[-20:]
+        self.stats.running = False
+        self.stats.active_task = "idle"
+        self.stats.active_games = int(data.get("active_games", 0))
+        self.stats.active_positions = int(data.get("active_positions", 0))
+        self.stats.active_review_round = int(data.get("active_review_round", 0))
+        self.stats.active_review_rounds = int(data.get("active_review_rounds", 0))
+        self.stats.message = "Loaded training statistics."
+        self.set_learning_rate(self.stats.learning_rate)
+
+    def save_stats(self) -> None:
+        data = self.stats.payload()
+        data["running"] = False
+        temp_path = self.stats_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(data, indent=2, sort_keys=True))
+        temp_path.replace(self.stats_path)
+
     def save(self) -> None:
         torch.save(
             {
@@ -202,6 +240,7 @@ class NeuralSelfTrainer:
             },
             self.model_path,
         )
+        self.save_stats()
 
     def set_learning_rate(self, learning_rate: float) -> None:
         learning_rate = max(0.00001, min(float(learning_rate), 0.1))
@@ -375,6 +414,7 @@ class NeuralSelfTrainer:
                     f"{label} {round_index + 1}/{review_rounds}, "
                     f"loss {avg_loss:.4f}, value {avg_value_loss:.4f}, policy {avg_policy_loss:.4f}."
                 )
+            self.save_stats()
 
     def generate_self_play_samples(self, games: int) -> list[tuple[torch.Tensor, float, int]]:
         samples: list[tuple[torch.Tensor, float, int]] = []
@@ -407,6 +447,9 @@ class NeuralSelfTrainer:
                     f"Self-play generated {self.stats.active_games}/{games} games, "
                     f"{self.stats.active_positions} positions."
                 )
+                should_save_stats = self.stats.active_games % 10 == 0 or self.stats.active_games == games
+            if should_save_stats:
+                self.save_stats()
         return samples
 
     def choose_self_play_move(self, board: chess.Board, fallback_ai: BasicAI) -> chess.Move | None:
@@ -469,6 +512,9 @@ class NeuralSelfTrainer:
                     f"Loaded {self.stats.active_games} PGN games, "
                     f"{self.stats.active_positions} positions. Review will start after parsing."
                 )
+                should_save_stats = self.stats.active_games % 50 == 0
+            if should_save_stats:
+                self.save_stats()
 
         return samples, game_count
 
