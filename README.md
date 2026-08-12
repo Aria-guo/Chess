@@ -3,8 +3,8 @@
 A clean terminal chess project. The first version is deliberately simple:
 
 - Standard chess rules via `python-chess`
-- Human vs random legal-move AI
-- Pretty terminal board with Unicode pieces
+- Human vs basic rule-based AI with shallow alpha-beta search
+- Square terminal board with black and white Unicode pieces
 - Text input such as `e2e4`, `Nf3`, `O-O`, `quit`
 - Optional Textual UI with mouse/touch-friendly square selection
 
@@ -51,9 +51,8 @@ quit
 
 ## Roadmap
 
-1. Add stronger rule-based scoring.
-2. Add alpha-beta search.
-3. Add PGN import for master games.
+1. Deepen alpha-beta search with transposition tables.
+2. Add PGN import for master games.
+3. Add opening-book support.
 4. Add self-play data generation.
 5. Add neural network policy/value model.
-

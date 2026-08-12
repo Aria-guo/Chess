@@ -7,8 +7,12 @@ from textual.message import Message
 from textual.widgets import Button, Footer, Header, Input, Static
 
 from chess_app.game import ChessGame, PlayerColor
-from chess_app.random_ai import RandomAI
+from chess_app.random_ai import BasicAI
 from chess_app.terminal import piece_symbol
+
+
+SQUARE_WIDTH = 4
+SQUARE_HEIGHT = 2
 
 
 class BoardView(Static):
@@ -20,7 +24,7 @@ class BoardView(Static):
     DEFAULT_CSS = """
     BoardView {
         width: 42;
-        height: 20;
+        height: 22;
         border: solid cyan;
         content-align: center middle;
     }
@@ -33,18 +37,22 @@ class BoardView(Static):
 
     def render(self) -> str:
         board = self.game.board
-        lines = ["    a  b  c  d  e  f  g  h"]
+        lines = ["    " + "".join(file_name.center(SQUARE_WIDTH) for file_name in "abcdefgh")]
         for rank in range(7, -1, -1):
-            row = [f" {rank + 1} "]
+            blank_row = ["    "]
+            piece_row = [f" {rank + 1}  "]
             for file_index in range(8):
                 square = chess.square(file_index, rank)
                 piece = piece_symbol(board.piece_at(square))
-                marker = "[" if square == self.selected else " "
-                closer = "]" if square == self.selected else " "
-                row.append(f"{marker}{piece}{closer}")
-            row.append(f" {rank + 1}")
-            lines.append("".join(row))
-        lines.append("    a  b  c  d  e  f  g  h")
+                if square == self.selected:
+                    piece_row.append(f"[{piece}] ")
+                else:
+                    piece_row.append(f" {piece}  ")
+                blank_row.append(" " * SQUARE_WIDTH)
+            piece_row.append(f" {rank + 1}")
+            lines.append("".join(blank_row))
+            lines.append("".join(piece_row))
+        lines.append("    " + "".join(file_name.center(SQUARE_WIDTH) for file_name in "abcdefgh"))
         return "\n".join(lines)
 
     def on_click(self, event) -> None:
@@ -52,8 +60,8 @@ class BoardView(Static):
         if offset is None:
             return
         x, y = offset
-        rank_line = y - 1
-        file_col = (x - 4) // 3
+        rank_line = (y - 1) // SQUARE_HEIGHT
+        file_col = (x - 4) // SQUARE_WIDTH
         if not (0 <= rank_line < 8 and 0 <= file_col < 8):
             return
         rank = 7 - rank_line
@@ -89,7 +97,7 @@ class ChessTui(App):
     def __init__(self, human_color: PlayerColor = PlayerColor.WHITE) -> None:
         super().__init__()
         self.game = ChessGame(human_color=human_color)
-        self.ai = RandomAI()
+        self.ai = BasicAI()
         self.board_view = BoardView(self.game)
         self.info = Static()
         self.input = Input(placeholder="e2e4, Nf3, O-O")
@@ -158,4 +166,3 @@ class ChessTui(App):
 
 def run_textual(human_color: PlayerColor = PlayerColor.WHITE) -> None:
     ChessTui(human_color=human_color).run()
-

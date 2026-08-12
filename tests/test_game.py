@@ -1,7 +1,7 @@
 import chess
 
 from chess_app.game import ChessGame, PlayerColor
-from chess_app.random_ai import RandomAI
+from chess_app.random_ai import BasicAI, RandomAI
 
 
 def test_human_move_accepts_uci():
@@ -32,9 +32,15 @@ def test_random_ai_only_returns_legal_moves():
         board.push(move)
 
 
+def test_basic_ai_prefers_winning_material():
+    board = chess.Board("4k3/8/8/3q4/4B3/8/8/4K3 w - - 0 1")
+    ai = BasicAI(seed=7)
+
+    assert ai.choose_move(board) == chess.Move.from_uci("e4d5")
+
+
 def test_black_human_means_ai_starts():
     game = ChessGame(human_color=PlayerColor.BLACK)
 
     assert game.is_ai_turn
     assert not game.is_human_turn
-

@@ -3,11 +3,10 @@ from __future__ import annotations
 import chess
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
 from chess_app.game import ChessGame, PlayerColor
-from chess_app.random_ai import RandomAI
+from chess_app.random_ai import BasicAI
 
 
 PIECES = {
@@ -19,6 +18,10 @@ PIECES = {
     chess.KING: ("♔", "♚"),
 }
 
+SQUARE_WIDTH = 4
+LIGHT_SQUARE = "#f0d9b5"
+DARK_SQUARE = "#b58863"
+
 
 def piece_symbol(piece: chess.Piece | None) -> str:
     if piece is None:
@@ -27,32 +30,45 @@ def piece_symbol(piece: chess.Piece | None) -> str:
     return white if piece.color == chess.WHITE else black
 
 
-def render_board(board: chess.Board, perspective: PlayerColor) -> Table:
+def render_board(board: chess.Board, perspective: PlayerColor) -> Panel:
     ranks = range(7, -1, -1) if perspective is PlayerColor.WHITE else range(8)
     files = range(8) if perspective is PlayerColor.WHITE else range(7, -1, -1)
 
-    table = Table.grid(padding=(0, 1))
-    table.add_column(justify="right")
-    for _ in files:
-        table.add_column(justify="center", width=3)
-    table.add_column()
-
-    file_labels = [chess.FILE_NAMES[file_index] for file_index in files]
-    table.add_row("", *file_labels, "")
+    board_text = Text()
+    board_text.append("    ")
+    for file_index in files:
+        board_text.append(chess.FILE_NAMES[file_index].center(SQUARE_WIDTH))
+    board_text.append("\n")
 
     for rank_index in ranks:
-        cells: list[Text] = []
+        top_line = Text(f" {rank_index + 1}  ")
+        piece_line = Text("    ")
         for file_index in files:
             square = chess.square(file_index, rank_index)
-            symbol = piece_symbol(board.piece_at(square))
             is_light = (rank_index + file_index) % 2 == 0
-            style = "black on #d8c99b" if is_light else "white on #6d7f8f"
-            cells.append(Text(f" {symbol} ", style=style))
-        rank_label = str(rank_index + 1)
-        table.add_row(rank_label, *cells, rank_label)
+            background = LIGHT_SQUARE if is_light else DARK_SQUARE
+            square_style = f"on {background}"
+            piece = board.piece_at(square)
 
-    table.add_row("", *file_labels, "")
-    return table
+            top_line.append(" " * SQUARE_WIDTH, style=square_style)
+            if piece is None:
+                piece_line.append(" " * SQUARE_WIDTH, style=square_style)
+            else:
+                fg = "white" if piece.color == chess.WHITE else "black"
+                piece_line.append(" ", style=square_style)
+                piece_line.append(piece_symbol(piece), style=f"bold {fg} on {background}")
+                piece_line.append("  ", style=square_style)
+
+        top_line.append(f"  {rank_index + 1}\n")
+        piece_line.append("\n")
+        board_text.append_text(top_line)
+        board_text.append_text(piece_line)
+
+    board_text.append("    ")
+    for file_index in files:
+        board_text.append(chess.FILE_NAMES[file_index].center(SQUARE_WIDTH))
+
+    return Panel(board_text, title="Board", border_style="cyan", expand=False)
 
 
 def render_info(game: ChessGame, last_ai_move: str | None) -> Panel:
@@ -74,7 +90,7 @@ def render_info(game: ChessGame, last_ai_move: str | None) -> Panel:
 def run_terminal(human_color: PlayerColor = PlayerColor.WHITE) -> None:
     console = Console()
     game = ChessGame(human_color=human_color)
-    ai = RandomAI()
+    ai = BasicAI()
     last_ai_move: str | None = None
 
     while not game.board.is_game_over(claim_draw=True):
@@ -107,4 +123,3 @@ def run_terminal(human_color: PlayerColor = PlayerColor.WHITE) -> None:
     console.print(render_board(game.board, game.human_color))
     console.print(render_info(game, last_ai_move))
     console.print(f"[bold]Result: {game.result() or game.status()}[/]")
-
