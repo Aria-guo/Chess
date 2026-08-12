@@ -273,7 +273,6 @@ class NeuralSelfTrainer:
             self.train_samples(samples, review_rounds, "Self-play review")
 
             with self.lock:
-                self.stats.total_review_rounds += review_rounds
                 self.stats.message = f"Finished {games} self-play games and {review_rounds} review rounds."
             self.save()
         except Exception as exc:
@@ -283,8 +282,6 @@ class NeuralSelfTrainer:
             with self.lock:
                 self.stats.running = False
                 self.stats.active_task = "idle"
-                self.stats.active_review_round = 0
-                self.stats.active_review_rounds = 0
 
     def train_pgn_text(self, pgn_text: str, review_rounds: int) -> None:
         try:
@@ -296,7 +293,6 @@ class NeuralSelfTrainer:
             self.train_samples(samples, review_rounds, "PGN review")
 
             with self.lock:
-                self.stats.total_review_rounds += review_rounds
                 self.stats.message = (
                     f"Finished PGN review: {game_count} games, "
                     f"{len(samples)} positions, {review_rounds} rounds."
@@ -309,8 +305,6 @@ class NeuralSelfTrainer:
             with self.lock:
                 self.stats.running = False
                 self.stats.active_task = "idle"
-                self.stats.active_review_round = 0
-                self.stats.active_review_rounds = 0
 
     def train_samples(
         self,
@@ -357,6 +351,7 @@ class NeuralSelfTrainer:
                 self.stats.last_policy_loss = avg_policy_loss
                 self.stats.recent_losses.append(avg_loss)
                 self.stats.active_review_round = round_index + 1
+                self.stats.total_review_rounds += 1
                 self.stats.message = (
                     f"{label} {round_index + 1}/{review_rounds}, "
                     f"loss {avg_loss:.4f}, value {avg_value_loss:.4f}, policy {avg_policy_loss:.4f}."
