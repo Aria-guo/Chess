@@ -19,10 +19,15 @@ def parse_color(value: str) -> PlayerColor:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Play terminal chess against a random legal AI.")
     parser.add_argument("--tui", action="store_true", help="Use mouse/touch-friendly Textual UI.")
+    parser.add_argument("--gui", action="store_true", help="Use graphical mouse UI with large centered pieces.")
     parser.add_argument("--color", type=parse_color, default=PlayerColor.WHITE, help="Human color: white or black.")
     args = parser.parse_args()
 
-    if args.tui:
+    if args.gui:
+        from chess_app.pygame_app import run_pygame
+
+        run_pygame(args.color)
+    elif args.tui:
         run_textual(args.color)
     else:
         run_terminal(args.color)
@@ -30,4 +35,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

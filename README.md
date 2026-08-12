@@ -7,6 +7,7 @@ A clean terminal chess project. The first version is deliberately simple:
 - Square terminal board with black and white Unicode pieces
 - Text input such as `e2e4`, `Nf3`, `O-O`, `quit`
 - Optional Textual UI with mouse/touch-friendly square selection
+- Optional graphical mouse UI with large centered pieces
 - Built-in repertoire opening book
 
 ## Setup
@@ -39,6 +40,15 @@ python -m chess_app --tui
 
 The Textual mode supports clicking the source square and target square. It also
 has buttons to choose whether you play White or Black.
+
+Graphical mode with large pieces:
+
+```bash
+python -m chess_app --gui
+```
+
+The graphical mode renders pieces with a large font in the exact center of each
+square and supports mouse-only play plus White/Black selection buttons.
 
 ## Move Input
 

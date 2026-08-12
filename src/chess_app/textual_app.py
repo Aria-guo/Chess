@@ -12,10 +12,9 @@ from chess_app.random_ai import BasicAI
 from chess_app.terminal import (
     DARK_SQUARE,
     LIGHT_SQUARE,
-    PIECE_BLOCK_WIDTH,
     SQUARE_HEIGHT,
     SQUARE_WIDTH,
-    piece_block_line,
+    piece_symbol,
 )
 
 
@@ -62,13 +61,13 @@ class BoardView(Static):
                 piece = board.piece_at(square)
 
                 for line_index, line in enumerate(square_lines):
-                    piece_text = piece_block_line(piece, line_index)
-                    if piece_text is not None:
+                    if piece is not None and line_index == SQUARE_HEIGHT // 2:
                         fg = "white" if piece.color == chess.WHITE else "black"
-                        left = (SQUARE_WIDTH - PIECE_BLOCK_WIDTH) // 2
-                        right = SQUARE_WIDTH - left - PIECE_BLOCK_WIDTH
+                        symbol = piece_symbol(piece)
+                        left = (SQUARE_WIDTH - 1) // 2
+                        right = SQUARE_WIDTH - left - 1
                         line.append(" " * left, style=square_style)
-                        line.append(piece_text, style=f"bold {fg} on {background}")
+                        line.append(symbol, style=f"bold {fg} on {background}")
                         line.append(" " * right, style=square_style)
                     else:
                         line.append(" " * SQUARE_WIDTH, style=square_style)

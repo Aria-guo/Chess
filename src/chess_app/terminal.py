@@ -20,8 +20,6 @@ PIECES = {
 
 SQUARE_WIDTH = 8
 SQUARE_HEIGHT = 5
-PIECE_BLOCK_WIDTH = 3
-PIECE_BLOCK_HEIGHT = 3
 LIGHT_SQUARE = "#f0d9b5"
 DARK_SQUARE = "#b58863"
 
@@ -31,15 +29,6 @@ def piece_symbol(piece: chess.Piece | None) -> str:
         return " "
     white, black = PIECES[piece.piece_type]
     return white if piece.color == chess.WHITE else black
-
-
-def piece_block_line(piece: chess.Piece | None, line_index: int) -> str | None:
-    if piece is None:
-        return None
-    block_start = (SQUARE_HEIGHT - PIECE_BLOCK_HEIGHT) // 2
-    if block_start <= line_index < block_start + PIECE_BLOCK_HEIGHT:
-        return piece_symbol(piece) * PIECE_BLOCK_WIDTH
-    return None
 
 
 def render_board(board: chess.Board, perspective: PlayerColor) -> Panel:
@@ -62,13 +51,12 @@ def render_board(board: chess.Board, perspective: PlayerColor) -> Panel:
             piece = board.piece_at(square)
 
             for line_index, line in enumerate(square_lines):
-                piece_text = piece_block_line(piece, line_index)
-                if piece_text is not None:
+                if piece is not None and line_index == SQUARE_HEIGHT // 2:
                     fg = "white" if piece.color == chess.WHITE else "black"
-                    left = (SQUARE_WIDTH - PIECE_BLOCK_WIDTH) // 2
-                    right = SQUARE_WIDTH - left - PIECE_BLOCK_WIDTH
+                    left = (SQUARE_WIDTH - 1) // 2
+                    right = SQUARE_WIDTH - left - 1
                     line.append(" " * left, style=square_style)
-                    line.append(piece_text, style=f"bold {fg} on {background}")
+                    line.append(piece_symbol(piece), style=f"bold {fg} on {background}")
                     line.append(" " * right, style=square_style)
                 else:
                     line.append(" " * SQUARE_WIDTH, style=square_style)
