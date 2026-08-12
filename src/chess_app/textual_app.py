@@ -9,11 +9,14 @@ from textual.widgets import Button, Footer, Header, Input, Static
 
 from chess_app.game import ChessGame, PlayerColor
 from chess_app.random_ai import BasicAI
-from chess_app.terminal import DARK_SQUARE, LIGHT_SQUARE, piece_symbol
-
-
-SQUARE_WIDTH = 8
-SQUARE_HEIGHT = 4
+from chess_app.terminal import (
+    DARK_SQUARE,
+    LIGHT_SQUARE,
+    PIECE_BLOCK_WIDTH,
+    SQUARE_HEIGHT,
+    SQUARE_WIDTH,
+    piece_block_line,
+)
 
 
 class BoardView(Static):
@@ -24,8 +27,8 @@ class BoardView(Static):
 
     DEFAULT_CSS = """
     BoardView {
-        width: 74;
-        height: 40;
+        width: 92;
+        height: 48;
         border: solid cyan;
         content-align: center middle;
     }
@@ -59,13 +62,13 @@ class BoardView(Static):
                 piece = board.piece_at(square)
 
                 for line_index, line in enumerate(square_lines):
-                    if piece is not None and line_index == SQUARE_HEIGHT // 2:
+                    piece_text = piece_block_line(piece, line_index)
+                    if piece_text is not None:
                         fg = "white" if piece.color == chess.WHITE else "black"
-                        symbol = piece_symbol(piece)
-                        left = (SQUARE_WIDTH - 1) // 2
-                        right = SQUARE_WIDTH - left - 1
+                        left = (SQUARE_WIDTH - PIECE_BLOCK_WIDTH) // 2
+                        right = SQUARE_WIDTH - left - PIECE_BLOCK_WIDTH
                         line.append(" " * left, style=square_style)
-                        line.append(symbol, style=f"bold {fg} on {background}")
+                        line.append(piece_text, style=f"bold {fg} on {background}")
                         line.append(" " * right, style=square_style)
                     else:
                         line.append(" " * SQUARE_WIDTH, style=square_style)
