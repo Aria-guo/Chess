@@ -33,7 +33,8 @@ SELF_PLAY_VALUE_LOSS_WEIGHT = 1.0
 PGN_VALUE_LOSS_WEIGHT = 0.0
 VALUE_TRUST_AFTER_POSITIONS = 10_000
 NEURAL_EVAL_WEIGHT = 0.25
-PGN_CHUNK_POSITIONS = 20_000
+PGN_CHUNK_POSITIONS = 50_000
+PGN_BATCH_SIZE = 512
 
 
 PIECE_TO_CHANNEL = {
@@ -377,6 +378,7 @@ class NeuralSelfTrainer:
                         review_rounds,
                         f"PGN policy chunk {chunk_count}",
                         value_loss_weight=PGN_VALUE_LOSS_WEIGHT,
+                        batch_size=PGN_BATCH_SIZE,
                     )
                     samples = []
 
@@ -387,6 +389,7 @@ class NeuralSelfTrainer:
                     review_rounds,
                     f"PGN policy chunk {chunk_count}",
                     value_loss_weight=PGN_VALUE_LOSS_WEIGHT,
+                    batch_size=PGN_BATCH_SIZE,
                 )
 
             if game_count == 0:
@@ -412,12 +415,13 @@ class NeuralSelfTrainer:
         review_rounds: int,
         label: str,
         value_loss_weight: float = SELF_PLAY_VALUE_LOSS_WEIGHT,
+        batch_size: int = 64,
     ) -> None:
         inputs = torch.stack([sample[0] for sample in samples])
         value_targets = torch.tensor([sample[1] for sample in samples], dtype=torch.float32)
         policy_targets = torch.tensor([sample[2] for sample in samples], dtype=torch.long)
         dataset = TensorDataset(inputs, value_targets, policy_targets)
-        loader = DataLoader(dataset, batch_size=64, shuffle=True)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         self.model.train()
         for round_index in range(review_rounds):
