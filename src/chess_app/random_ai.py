@@ -80,12 +80,12 @@ _PST_KING_EG = (
 
 _PST_PAWN = (
     (  0,   0,   0,   0,   0,   0,   0,   0),
-    ( 50,  50,  40,  40,  40,  40,  50,  50),
-    ( 20,  20,  10,  10,  10,  10,  20,  20),
-    ( 10,  10,  -5,  -5,  -5,  -5,  10,  10),
-    (  5,   5, -10, -10, -10, -10,   5,   5),
-    (  0,   0, -15, -15, -15, -15,   0,   0),
-    (  5,  10,  15,  20,  20,  15,  10,   5),
+    ( -5,  -2,   2,   5,   5,   2,  -2,  -5),
+    ( -3,   0,   3,   6,   6,   3,   0,  -3),
+    (  0,   3,   6,  10,  10,   6,   3,   0),
+    (  5,   8,  12,  18,  18,  12,   8,   5),
+    ( 15,  20,  28,  35,  35,  28,  20,  15),
+    ( 40,  50,  60,  70,  70,  60,  50,  40),
     (  0,   0,   0,   0,   0,   0,   0,   0),
 )
 
@@ -295,31 +295,17 @@ def _king_safety_score(board: chess.Board) -> int:
 # ---------------------------------------------------------------------------
 
 def _mobility_score(board: chess.Board) -> int:
-    """Return mobility score from White's perspective.
+    """Return mobility score from White's perspective (centipawns).
 
-    Only counts the side-to-move's legal moves directly; the opponent's
-    mobility is approximated from piece activity to avoid the cost of
-    generating pseudo-legal moves for both colours at every leaf node.
+    Counts legal moves for both sides by temporarily switching the turn.
     """
-    stm_moves = board.legal_moves.count()
-
-    # Approximate opponent mobility from developed piece count
-    white_developed = 0
-    black_developed = 0
-    for square, piece in board.piece_map().items():
-        if piece.piece_type == chess.KING or piece.piece_type == chess.PAWN:
-            continue
-        rank = chess.square_rank(square)
-        if piece.color == chess.WHITE:
-            if rank >= 1:
-                white_developed += 1
-        else:
-            if rank <= 6:
-                black_developed += 1
-
-    if board.turn == chess.WHITE:
-        return 3 * (stm_moves - (black_developed * 4 + 8))
-    return 3 * ((white_developed * 4 + 8) - stm_moves)
+    original_turn = board.turn
+    board.turn = chess.WHITE
+    white_moves = board.legal_moves.count()
+    board.turn = chess.BLACK
+    black_moves = board.legal_moves.count()
+    board.turn = original_turn
+    return 4 * (white_moves - black_moves)
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +344,135 @@ def _bishop_pair_bonus(board: chess.Board) -> int:
     if black_bishops >= 2:
         score -= BISHOP_PAIR_BONUS
     return score
+
+
+# ---------------------------------------------------------------------------
+# Tactical pattern detection
+# ---------------------------------------------------------------------------
+
+def _fork_score(board: chess.Board) -> int:
+    """Detect forks: a piece attacking two or more enemy pieces of equal/higher value.
+
+    Returns score from White's perspective.
+    """
+    score = 0
+    for square, piece in board.piece_map().items():
+        if piece.piece_type == chess.KING:
+            continue
+        # Get all squares this piece attacks
+        attacks = board.attacks(square)
+        enemy_valuable = []
+        for target_sq in attacks:
+            target = board.piece_at(target_sq)
+            if target is not None and target.color != piece.color:
+                if target.piece_type == chess.KING:
+                    # Attacking the king is very strong (check)
+                    enemy_valuable.append(1000)
+                elif PIECE_VALUES[target.piece_type] >= PIECE_VALUES[piece.piece_type] - 100:
+                    enemy_valuable.append(PIECE_VALUES[target.piece_type])
+
+        # Fork: attacking 2+ valuable pieces
+        if len(enemy_valuable) >= 2:
+            # Sort by value, take top 2
+            enemy_valuable.sort(reverse=True)
+            fork_value = enemy_valuable[0] + enemy_valuable[1]
+            # Knights and pawns are especially dangerous forking pieces
+            if piece.piece_type == chess.KNIGHT:
+                fork_value = int(fork_value * 1.3)
+            elif piece.piece_type == chess.PAWN:
+                fork_value = int(fork_value * 1.5)
+
+            sign = 1 if piece.color == chess.WHITE else -1
+            score += sign * min(fork_value // 4, 150)  # Cap at 150cp
+
+    return score
+
+
+def _pin_score(board: chess.Board) -> int:
+    """Detect pins: a piece blocking an attack on a more valuable piece.
+
+    Rewards the side that IS pinning.  Returns score from White's perspective.
+    """
+    score = 0
+    for pinned_color in (chess.WHITE, chess.BLACK):
+        king_sq = board.king(pinned_color)
+        if king_sq is None:
+            continue
+
+        for square, piece in board.piece_map().items():
+            if piece.color != pinned_color:
+                continue
+            if piece.piece_type == chess.KING:
+                continue
+
+            for enemy_sq, enemy_piece in board.piece_map().items():
+                if enemy_piece.color == pinned_color:
+                    continue
+                if enemy_piece.piece_type not in (chess.BISHOP, chess.ROOK, chess.QUEEN):
+                    continue
+
+                if _is_pinned_to(board, square, king_sq, enemy_sq, enemy_piece):
+                    # Reward the PINNING side (opposite of pinned color)
+                    pinner_sign = -1 if pinned_color == chess.WHITE else 1
+                    pinned_value = PIECE_VALUES[piece.piece_type]
+                    bonus = 40
+                    if pinned_value >= 900:
+                        bonus += 60
+                    elif pinned_value >= 500:
+                        bonus += 30
+                    score += pinner_sign * bonus
+
+    return score
+
+
+def _is_pinned_to(board: chess.Board, pinned_sq: int, king_sq: int, attacker_sq: int, attacker: chess.Piece) -> bool:
+    """Check if attacker at attacker_sq pins pinned_sq to king_sq."""
+    # Check if all three squares are on the same line
+    attacker_file = chess.square_file(attacker_sq)
+    attacker_rank = chess.square_rank(attacker_sq)
+    pinned_file = chess.square_file(pinned_sq)
+    pinned_rank = chess.square_rank(pinned_sq)
+    king_file = chess.square_file(king_sq)
+    king_rank = chess.square_rank(king_sq)
+
+    # Check if they're on the same rank
+    if attacker_rank == pinned_rank == king_rank:
+        # Check if pinned is between attacker and king on this rank
+        files = sorted([attacker_file, pinned_file, king_file])
+        if files[1] == pinned_file:
+            # Pinned is in the middle - verify it's actually a pin
+            return True
+
+    # Check if they're on the same file
+    if attacker_file == pinned_file == king_file:
+        ranks = sorted([attacker_rank, pinned_rank, king_rank])
+        if ranks[1] == pinned_rank:
+            return True
+
+    # Check diagonals
+    def on_same_diagonal(s1, s2):
+        f1, r1 = chess.square_file(s1), chess.square_rank(s1)
+        f2, r2 = chess.square_file(s2), chess.square_rank(s2)
+        return abs(f1 - f2) == abs(r1 - r2)
+
+    if on_same_diagonal(attacker_sq, pinned_sq) and on_same_diagonal(pinned_sq, king_sq):
+        # Verify the attacker can actually move along this diagonal
+        if attacker.piece_type == chess.QUEEN or attacker.piece_type == chess.BISHOP:
+            # Check if pinned is between attacker and king
+            # Use a simple check: the three squares should be on the same diagonal line
+            af, ar = chess.square_file(attacker_sq), chess.square_rank(attacker_sq)
+            pf, pr = chess.square_file(pinned_sq), chess.square_rank(pinned_sq)
+            kf, kr = chess.square_file(king_sq), chess.square_rank(king_sq)
+            # Direction from attacker to king
+            df = kf - af
+            dr = kr - ar
+            if df == 0 and dr == 0:
+                return False
+            # Check if pinned is between them
+            t_pinned = (pf - af) / df if df != 0 else (pr - ar) / dr
+            return 0 < t_pinned < 1
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +517,7 @@ def evaluate_position(board: chess.Board, color: bool) -> int:
     mobility = _mobility_score(board)
     rook_act = _rook_activity(board)
     bishop_pair = _bishop_pair_bonus(board)
+    tactics = _fork_score(board) + _pin_score(board)
 
     # Sign-adjust for the side we're evaluating
     sign_color = 1 if color == chess.WHITE else -1
@@ -414,6 +530,7 @@ def evaluate_position(board: chess.Board, color: bool) -> int:
         + mobility
         + sign_color * rook_act
         + sign_color * bishop_pair
+        + sign_color * tactics
     )
 
     # Tempo

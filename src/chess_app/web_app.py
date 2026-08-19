@@ -893,7 +893,11 @@ INDEX_HTML = r"""
       fill.style.height = `${bottomPercent}%`;
       fill.style.background = bottomColor;
       bar.style.background = topColor;
-      document.getElementById("eval-label").textContent = evaluation.label;
+      // Show eval from human's perspective
+      const humanEvalValue = humanIsWhite ? evaluation.white_value : -evaluation.white_value;
+      const humanEvalLabel = (humanEvalValue >= 0 ? "+" : "") + humanEvalValue.toFixed(2);
+      document.getElementById("eval-label").textContent = humanEvalLabel;
+      document.getElementById("eval").textContent = humanEvalLabel;
       document.getElementById("eval-label").style.color = bottomPercent > 35 ? bottomTextColor : topTextColor;
       document.getElementById("eval-top-label").textContent = `${topName} ${Math.round(topPercent)}%`;
       document.getElementById("eval-top-label").style.color = topTextColor;
