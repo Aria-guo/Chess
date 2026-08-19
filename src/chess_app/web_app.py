@@ -880,29 +880,50 @@ INDEX_HTML = r"""
 
     function renderEvaluation(evaluation) {
       const humanIsWhite = state?.human_color !== "black";
-      const bottomPercent = humanIsWhite ? evaluation.white_percent : evaluation.black_percent;
-      const topPercent = 100 - bottomPercent;
-      const bottomName = humanIsWhite ? "W" : "B";
-      const topName = humanIsWhite ? "B" : "W";
-      const bottomColor = humanIsWhite ? "#f7f7f7" : "#111";
-      const topColor = humanIsWhite ? "#111" : "#f7f7f7";
-      const bottomTextColor = humanIsWhite ? "#111" : "#f7f7f7";
-      const topTextColor = humanIsWhite ? "#f7f7f7" : "#111";
       const bar = document.querySelector(".eval-bar");
       const fill = document.getElementById("eval-white");
-      fill.style.height = `${bottomPercent}%`;
-      fill.style.background = bottomColor;
-      bar.style.background = topColor;
+
+      // The fill div is always at bottom:0, growing upward.
+      // When human is white: fill = white (light), height = white_percent
+      // When human is black: flip the bar so black is at the bottom (matching the board).
+      //   After scaleY(-1), the fill moves to the TOP. So we set fill = white (light)
+      //   with height = white_percent. After flipping, white is at top, black at bottom.
+      if (humanIsWhite) {
+        bar.style.transform = "none";
+        fill.style.height = `${evaluation.white_percent}%`;
+        fill.style.background = "#f7f7f7";
+        bar.style.background = "#111";
+      } else {
+        bar.style.transform = "scaleY(-1)";
+        fill.style.height = `${evaluation.white_percent}%`;
+        fill.style.background = "#f7f7f7";
+        bar.style.background = "#111";
+      }
+
       // Show eval from human's perspective
       const humanEvalValue = humanIsWhite ? evaluation.white_value : -evaluation.white_value;
       const humanEvalLabel = (humanEvalValue >= 0 ? "+" : "") + humanEvalValue.toFixed(2);
-      document.getElementById("eval-label").textContent = humanEvalLabel;
+      // Flip the label text back so it's readable when bar is flipped
+      const labelEl = document.getElementById("eval-label");
+      labelEl.textContent = humanEvalLabel;
+      labelEl.style.transform = humanIsWhite ? "translate(-50%, -50%) rotate(-90deg)" : "translate(-50%, -50%) rotate(90deg)";
       document.getElementById("eval").textContent = humanEvalLabel;
-      document.getElementById("eval-label").style.color = bottomPercent > 35 ? bottomTextColor : topTextColor;
-      document.getElementById("eval-top-label").textContent = `${topName} ${Math.round(topPercent)}%`;
-      document.getElementById("eval-top-label").style.color = topTextColor;
-      document.getElementById("eval-bottom-label").textContent = `${bottomName} ${Math.round(bottomPercent)}%`;
-      document.getElementById("eval-bottom-label").style.color = bottomTextColor;
+
+      // Side labels
+      const whitePct = Math.round(evaluation.white_percent);
+      const blackPct = 100 - whitePct;
+      if (humanIsWhite) {
+        document.getElementById("eval-top-label").textContent = `B ${blackPct}%`;
+        document.getElementById("eval-top-label").style.color = "#f7f7f7";
+        document.getElementById("eval-bottom-label").textContent = `W ${whitePct}%`;
+        document.getElementById("eval-bottom-label").style.color = "#111";
+      } else {
+        // When flipped, top/bottom are swapped visually
+        document.getElementById("eval-top-label").textContent = `W ${whitePct}%`;
+        document.getElementById("eval-top-label").style.color = "#111";
+        document.getElementById("eval-bottom-label").textContent = `B ${blackPct}%`;
+        document.getElementById("eval-bottom-label").style.color = "#f7f7f7";
+      }
     }
 
     function formatInteger(value) {
