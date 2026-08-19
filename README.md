@@ -102,6 +102,59 @@ bad checkpoint does not erase the counters shown on the web page:
 models/training_stats.json
 ```
 
+## Lichess Bot
+
+Create a separate Lichess account for the engine, verify the email, create an
+API token with Bot play permissions, and upgrade that account to Bot mode. Keep
+the token private; do not paste it into the web page or commit it to git.
+
+Set the token in your shell:
+
+```bash
+export LICHESS_TOKEN="paste-your-token-here"
+```
+
+If the token does not have account-read permission, also set the bot username:
+
+```bash
+export LICHESS_BOT_USERNAME="ResazurinAI"
+```
+
+Run the bot:
+
+```bash
+python -m chess_app --lichess-bot
+```
+
+The bot accepts rated and casual standard games by default, so rated challenges
+count toward its Lichess rating. It declines variants and unsupported time
+controls. Each move uses the same opening personality and neural policy/value
+search as the local web engine:
+
+```bash
+python -m chess_app --lichess-bot --lichess-move-time 5 --lichess-max-depth 10
+```
+
+To temporarily disable rated games:
+
+```bash
+python -m chess_app --lichess-bot --lichess-casual-only
+```
+
+To actively play against Lichess AI and train from the finished games, run:
+
+```bash
+python -m chess_app --lichess-stockfish-sweep \
+  --lichess-games-per-level 1 \
+  --lichess-review-rounds 3 \
+  --lichess-move-time 5 \
+  --lichess-max-depth 10
+```
+
+Lichess exposes AI levels 1 through 8. The sweep challenges each level once per
+round, plays the game through the Bot API, then trains the local policy head from
+the completed move sequence before continuing to the next level.
+
 ## Move Input
 
 You can enter moves in UCI or SAN:

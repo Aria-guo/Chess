@@ -18,7 +18,7 @@ class BookMove:
 
 
 class OpeningBook:
-    """Small repertoire book built from curated PGN-style move lines."""
+    """Small repertoire book for first-move personality choices."""
 
     def __init__(self, seed: int | None = None) -> None:
         self.rng = random.Random(seed)
@@ -66,41 +66,8 @@ class OpeningBook:
 def build_default_opening_book(seed: int | None = None) -> OpeningBook:
     book = OpeningBook(seed=seed)
 
-    queen_gambit_lines = [
-        ("Queen's Gambit Declined: Orthodox", "d4 d5 c4 e6 Nc3 Nf6 Bg5 Be7 e3 O-O Nf3 h6 Bh4 b6"),
-        ("Queen's Gambit Declined: Exchange", "d4 d5 c4 e6 Nc3 Nf6 cxd5 exd5 Bg5 Be7 e3 O-O Bd3"),
-        ("Queen's Gambit Declined: Tarrasch", "d4 d5 c4 e6 Nc3 c5 cxd5 exd5 Nf3 Nc6 g3 Nf6 Bg2 Be7"),
-        ("Queen's Gambit Accepted", "d4 d5 c4 dxc4 e3 Nf6 Bxc4 e6 Nf3 c5 O-O a6"),
-        ("Slav Defense", "d4 d5 c4 c6 Nf3 Nf6 Nc3 dxc4 a4 Bf5 e3 e6 Bxc4"),
-        ("Semi-Slav Defense", "d4 d5 c4 c6 Nf3 Nf6 Nc3 e6 e3 Nbd7 Bd3 dxc4 Bxc4"),
-        ("Albin Countergambit", "d4 d5 c4 e5 dxe5 d4 Nf3 Nc6 g3 Be6 Bg2 Qd7"),
-        ("Chigorin Defense", "d4 d5 c4 Nc6 Nf3 Bg4 cxd5 Bxf3 gxf3 Qxd5 e3 e5"),
-    ]
-
-    sicilian_lines = [
-        ("Sicilian Defense: Najdorf", "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6 Be3 e5 Nb3 Be6"),
-        ("Sicilian Defense: Classical", "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 Nc6 Bg5 e6"),
-        ("Sicilian Defense: Dragon", "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 g6 Be3 Bg7"),
-        ("Sicilian Defense: Accelerated Dragon", "e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 g6 Nc3 Bg7"),
-        ("Sicilian Defense: Kan", "e4 c5 Nf3 e6 d4 cxd4 Nxd4 a6 Bd3 Nf6 O-O Qc7"),
-        ("Sicilian Defense: Alapin", "e4 c5 c3 d5 exd5 Qxd5 d4 Nf6 Nf3 e6 Be2"),
-        ("Sicilian Defense: Closed", "e4 c5 Nc3 Nc6 g3 g6 Bg2 Bg7 d3 d6 f4 e6"),
-    ]
-
-    dutch_lines = [
-        ("Dutch Defense: Classical", "d4 f5 c4 Nf6 g3 e6 Bg2 Be7 Nf3 O-O O-O d6 Nc3 Qe8"),
-        ("Dutch Defense: Leningrad", "d4 f5 c4 Nf6 g3 g6 Bg2 Bg7 Nf3 O-O O-O d6"),
-        ("Dutch Defense vs London", "d4 f5 Nf3 Nf6 Bf4 e6 e3 Be7 h3 O-O Bd3 d6"),
-        ("Dutch Defense vs Colle", "d4 f5 Nf3 Nf6 e3 e6 Bd3 Be7 O-O O-O c4 d6"),
-        ("Dutch Defense vs English", "c4 f5 Nc3 Nf6 g3 e6 Bg2 Be7 Nf3 O-O O-O d6"),
-        ("Dutch Defense vs Zukertort", "Nf3 f5 d4 Nf6 g3 e6 Bg2 Be7 O-O O-O c4 d6"),
-    ]
-
-    for name, line in queen_gambit_lines:
-        book.add_line(name, line, weight=4, repertoire_color=chess.WHITE)
-    for name, line in sicilian_lines:
-        book.add_line(name, line, weight=5, repertoire_color=chess.BLACK)
-    for name, line in dutch_lines:
-        book.add_line(name, line, weight=5, repertoire_color=chess.BLACK)
+    book.add_line("Queen's Pawn Opening", "d4", weight=1, repertoire_color=chess.WHITE)
+    book.add_line("Sicilian Defense", "e4 c5", weight=1, repertoire_color=chess.BLACK)
+    book.add_line("Dutch Defense", "d4 f5", weight=1, repertoire_color=chess.BLACK)
 
     return book

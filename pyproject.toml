@@ -5,6 +5,7 @@ description = "A terminal chess game with legal random AI, built as a base for f
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "certifi>=2024.8.30",
     "flask>=3.0",
     "numpy>=2.0",
     "pygame>=2.6",

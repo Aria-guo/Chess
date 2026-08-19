@@ -105,13 +105,39 @@ INDEX_HTML = r"""
     .eval-label {
       position: absolute;
       left: 50%;
-      bottom: 8px;
-      transform: translateX(-50%) rotate(-90deg);
+      top: 50%;
+      bottom: auto;
+      z-index: 2;
+      padding: 3px 6px;
+      background: rgba(120, 132, 145, 0.22);
+      border-radius: 3px;
+      transform: translate(-50%, -50%) rotate(-90deg);
       transform-origin: center;
       font-size: 12px;
       font-weight: 850;
       color: #111;
       white-space: nowrap;
+    }
+
+    .eval-side-label {
+      position: absolute;
+      left: 50%;
+      z-index: 2;
+      transform: translateX(-50%) rotate(-90deg);
+      transform-origin: center;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .eval-side-label.top {
+      top: 18px;
+    }
+
+    .eval-side-label.bottom {
+      bottom: 8px;
     }
 
     .files {
@@ -297,6 +323,69 @@ INDEX_HTML = r"""
       line-height: 1.45;
     }
 
+    .promotion-modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(18, 24, 31, 0.38);
+      z-index: 20;
+    }
+
+    .promotion-modal.open {
+      display: flex;
+    }
+
+    .promotion-dialog {
+      width: min(360px, 100%);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      box-shadow: 0 22px 60px rgba(17, 24, 31, 0.28);
+      padding: 18px;
+    }
+
+    .promotion-dialog h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .promotion-options {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+
+    .promotion-choice {
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      min-height: 74px;
+      display: grid;
+      place-items: center;
+      font-size: 44px;
+      line-height: 1;
+      cursor: pointer;
+      font-family: "Arial Unicode MS", "Noto Sans Symbols 2", "DejaVu Sans", "Apple Symbols", serif;
+    }
+
+    .promotion-choice:hover {
+      border-color: var(--accent);
+      background: #eef6fa;
+    }
+
+    .promotion-cancel {
+      margin-top: 12px;
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      min-height: 38px;
+      font-weight: 750;
+      cursor: pointer;
+    }
+
     .trainer {
       margin-top: 18px;
       border-top: 1px solid var(--line);
@@ -381,6 +470,84 @@ INDEX_HTML = r"""
       padding: 10px 0;
     }
 
+    .watch-row {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      padding: 10px 12px;
+    }
+
+    .watch-row input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
+    .live-self-play {
+      display: none;
+      gap: 10px;
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      padding: 12px;
+    }
+
+    .live-self-play.open {
+      display: grid;
+    }
+
+    .live-board {
+      width: min(100%, 260px);
+      aspect-ratio: 1 / 1;
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      grid-template-rows: repeat(8, 1fr);
+      border: 2px solid #27313b;
+      background: #27313b;
+    }
+
+    .live-square {
+      display: grid;
+      place-items: center;
+      font-family: "Arial Unicode MS", "Noto Sans Symbols 2", "DejaVu Sans", "Apple Symbols", serif;
+      font-size: clamp(18px, 4.5vmin, 32px);
+      line-height: 1;
+    }
+
+    .live-square.light {
+      background: var(--light-square);
+    }
+
+    .live-square.dark {
+      background: var(--dark-square);
+    }
+
+    .live-piece.white {
+      color: #fafafa;
+      -webkit-text-stroke: 0.7px rgba(30, 30, 30, 0.34);
+      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.22);
+    }
+
+    .live-piece.black {
+      color: #111;
+      -webkit-text-stroke: 0.7px rgba(255, 255, 255, 0.2);
+    }
+
+    .live-moves {
+      min-height: 58px;
+      max-height: 92px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
     .stats-panel {
       grid-column: 1 / -1;
       background: var(--surface);
@@ -463,6 +630,8 @@ INDEX_HTML = r"""
           <div class="eval-white" id="eval-white"></div>
           <div class="eval-mid"></div>
           <div class="eval-label" id="eval-label">+0.00</div>
+          <div class="eval-side-label top" id="eval-top-label">B 50%</div>
+          <div class="eval-side-label bottom" id="eval-bottom-label">W 50%</div>
         </div>
         <div class="board-column">
           <div class="files" id="files"></div>
@@ -487,18 +656,21 @@ INDEX_HTML = r"""
       </div>
       <p class="message" id="message">Loading game...</p>
       <div class="move-list" id="moves"></div>
-      <p class="hint">Click one of your pieces, then click a target square. Pawn promotion by click defaults to queen.</p>
+      <p class="hint">Click one of your pieces, then click a target square. Pawns promote on the final rank.</p>
       <section class="trainer">
         <h2>Self Training</h2>
         <div class="train-grid">
           <label>Games
-            <input id="train-games" type="number" min="1" max="1000" value="100">
+            <input id="train-games" type="number" min="1" max="1000" value="200">
           </label>
           <label>Review rounds
-            <input id="train-rounds" type="number" min="1" max="200" value="30">
+            <input id="train-rounds" type="number" min="1" max="200" value="20">
           </label>
           <label>Learning rate
-            <input id="learning-rate" type="number" min="0.00001" max="0.1" step="0.0001" value="0.001">
+            <input id="learning-rate" type="number" min="0.00001" max="0.1" step="0.0001" value="0.0005">
+          </label>
+          <label class="watch-row">Watch self-play
+            <input id="watch-self-play" type="checkbox" checked>
           </label>
           <button class="train-button" type="button" id="train-button">Train model</button>
           <label>PGN file
@@ -522,6 +694,11 @@ INDEX_HTML = r"""
           <div class="row"><span>Policy loss</span><strong id="train-policy-loss">-</strong></div>
           <div class="row"><span>Learning rate</span><strong id="train-lr">0.001</strong></div>
           <div class="row"><span>PGN preset</span><strong id="train-pgn-preset">5 rounds / 0.0005</strong></div>
+        </div>
+        <div class="live-self-play" id="live-self-play">
+          <div class="row"><span>Live game</span><strong id="live-self-play-meta">-</strong></div>
+          <div class="live-board" id="live-self-play-board"></div>
+          <div class="live-moves" id="live-self-play-moves">-</div>
         </div>
         <p class="hint" id="train-message">Neural trainer is idle.</p>
       </section>
@@ -580,12 +757,32 @@ INDEX_HTML = r"""
       </div>
     </section>
   </main>
+  <div class="promotion-modal" id="promotion-modal" role="dialog" aria-modal="true" aria-labelledby="promotion-title">
+    <div class="promotion-dialog">
+      <h2 id="promotion-title">Choose promotion</h2>
+      <div class="promotion-options" id="promotion-options"></div>
+      <button class="promotion-cancel" type="button" id="promotion-cancel">Cancel</button>
+    </div>
+  </div>
   <script>
     const boardEl = document.getElementById("board");
     const filesEl = document.getElementById("files");
     const messageEl = document.getElementById("message");
+    const promotionModal = document.getElementById("promotion-modal");
+    const promotionOptionsEl = document.getElementById("promotion-options");
+    const promotionPieceSymbols = {
+      white: {q: "♕", r: "♖", b: "♗", n: "♘"},
+      black: {q: "♛", r: "♜", b: "♝", n: "♞"}
+    };
+    const promotionNames = {q: "Queen", r: "Rook", b: "Bishop", n: "Knight"};
+    const fenPieceSymbols = {
+      P: ["♙", "white"], N: ["♘", "white"], B: ["♗", "white"], R: ["♖", "white"], Q: ["♕", "white"], K: ["♔", "white"],
+      p: ["♟", "black"], n: ["♞", "black"], b: ["♝", "black"], r: ["♜", "black"], q: ["♛", "black"], k: ["♚", "black"]
+    };
     let state = null;
     let selected = null;
+    let pendingPromotion = null;
+    let aiThinking = false;
 
     async function api(path, body) {
       const options = body === undefined ? {} : {
@@ -607,6 +804,12 @@ INDEX_HTML = r"""
 
     function legalTargets(from) {
       return new Set(state.legal_moves.filter(m => m.from === from).map(m => m.to));
+    }
+
+    function promotionOptions(from, to) {
+      return state.legal_moves
+        .filter(m => m.from === from && m.to === to && m.promotion)
+        .map(m => m.promotion);
     }
 
     function pieceOn(squareName) {
@@ -670,14 +873,32 @@ INDEX_HTML = r"""
       document.getElementById("policy-best").textContent = state.policy.length ? state.policy[0].uci : "-";
       messageEl.textContent = state.message;
       document.getElementById("moves").textContent = state.moves.length ? state.moves.join("\n") : "No moves yet.";
+      if (aiThinking) messageEl.textContent = "AI is thinking...";
       renderEvaluation(state.evaluation);
       renderTraining(state.training);
     }
 
     function renderEvaluation(evaluation) {
-      document.getElementById("eval-white").style.height = `${evaluation.white_percent}%`;
+      const humanIsWhite = state?.human_color !== "black";
+      const bottomPercent = humanIsWhite ? evaluation.white_percent : evaluation.black_percent;
+      const topPercent = 100 - bottomPercent;
+      const bottomName = humanIsWhite ? "W" : "B";
+      const topName = humanIsWhite ? "B" : "W";
+      const bottomColor = humanIsWhite ? "#f7f7f7" : "#111";
+      const topColor = humanIsWhite ? "#111" : "#f7f7f7";
+      const bottomTextColor = humanIsWhite ? "#111" : "#f7f7f7";
+      const topTextColor = humanIsWhite ? "#f7f7f7" : "#111";
+      const bar = document.querySelector(".eval-bar");
+      const fill = document.getElementById("eval-white");
+      fill.style.height = `${bottomPercent}%`;
+      fill.style.background = bottomColor;
+      bar.style.background = topColor;
       document.getElementById("eval-label").textContent = evaluation.label;
-      document.getElementById("eval-label").style.color = evaluation.white_percent > 35 ? "#111" : "#f7f7f7";
+      document.getElementById("eval-label").style.color = bottomPercent > 35 ? bottomTextColor : topTextColor;
+      document.getElementById("eval-top-label").textContent = `${topName} ${Math.round(topPercent)}%`;
+      document.getElementById("eval-top-label").style.color = topTextColor;
+      document.getElementById("eval-bottom-label").textContent = `${bottomName} ${Math.round(bottomPercent)}%`;
+      document.getElementById("eval-bottom-label").style.color = bottomTextColor;
     }
 
     function formatInteger(value) {
@@ -729,6 +950,57 @@ INDEX_HTML = r"""
       document.getElementById("train-button").disabled = training.running;
       document.getElementById("pgn-train-button").disabled = training.running;
       document.getElementById("pgn-file").disabled = training.running;
+      renderLiveSelfPlay(training);
+    }
+
+    function renderLiveSelfPlay(training) {
+      const panel = document.getElementById("live-self-play");
+      const watch = document.getElementById("watch-self-play").checked;
+      const live = training.live_self_play || {};
+      if (!watch || !live.fen) {
+        panel.classList.remove("open");
+        return;
+      }
+      panel.classList.add("open");
+      const gameLabel = training.active_task === "self-play" ? `${formatInteger(training.active_games + 1)} playing` : "last game";
+      const result = live.result ? ` · ${live.result}` : "";
+      document.getElementById("live-self-play-meta").textContent = `${gameLabel} · ${formatInteger(live.ply)} ply${result}`;
+      document.getElementById("live-self-play-moves").textContent = live.moves?.length ? live.moves.join(" ") : "-";
+      renderFenBoard(live.fen);
+    }
+
+    function renderFenBoard(fen) {
+      const board = document.getElementById("live-self-play-board");
+      board.innerHTML = "";
+      const rows = fen.split(" ")[0].split("/");
+      rows.forEach((row, rankIndex) => {
+        let fileIndex = 0;
+        [...row].forEach(token => {
+          const empty = Number(token);
+          if (Number.isInteger(empty) && empty > 0) {
+            for (let index = 0; index < empty; index += 1) {
+              appendLiveSquare(board, rankIndex, fileIndex, null);
+              fileIndex += 1;
+            }
+            return;
+          }
+          appendLiveSquare(board, rankIndex, fileIndex, token);
+          fileIndex += 1;
+        });
+      });
+    }
+
+    function appendLiveSquare(board, rankIndex, fileIndex, token) {
+      const square = document.createElement("div");
+      square.className = `live-square ${(rankIndex + fileIndex) % 2 === 0 ? "light" : "dark"}`;
+      if (token && fenPieceSymbols[token]) {
+        const piece = document.createElement("span");
+        const [symbol, color] = fenPieceSymbols[token];
+        piece.className = `live-piece ${color}`;
+        piece.textContent = symbol;
+        square.appendChild(piece);
+      }
+      board.appendChild(square);
     }
 
     async function clickSquare(square) {
@@ -746,14 +1018,69 @@ INDEX_HTML = r"""
 
       const from = selected;
       selected = null;
+      const promotions = promotionOptions(from, square);
+      if (promotions.length) {
+        pendingPromotion = {from, to: square, options: promotions};
+        render();
+        showPromotionPicker();
+        return;
+      }
+      await submitMove(from, square);
+    }
+
+    async function submitMove(from, to, promotion = null) {
       try {
-        state = await api("/api/move", {from, to: square});
+        state = await api("/api/move", {from, to, promotion});
       } catch (error) {
         messageEl.textContent = error.message;
         render();
         return;
       }
       render();
+      if (state.is_ai_turn && !state.game_over) {
+        await requestAiMove();
+      }
+    }
+
+    async function requestAiMove() {
+      aiThinking = true;
+      messageEl.textContent = "AI is thinking...";
+      try {
+        state = await api("/api/ai-move", {});
+      } catch (error) {
+        messageEl.textContent = error.message;
+      } finally {
+        aiThinking = false;
+      }
+      render();
+    }
+
+    function showPromotionPicker() {
+      if (!pendingPromotion) return;
+      promotionOptionsEl.innerHTML = "";
+      pendingPromotion.options.forEach(piece => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "promotion-choice";
+        button.textContent = promotionPieceSymbols[state.human_color][piece];
+        button.setAttribute("aria-label", promotionNames[piece]);
+        button.addEventListener("click", () => choosePromotion(piece));
+        promotionOptionsEl.appendChild(button);
+      });
+      promotionModal.classList.add("open");
+    }
+
+    function hidePromotionPicker() {
+      promotionModal.classList.remove("open");
+      promotionOptionsEl.innerHTML = "";
+      pendingPromotion = null;
+    }
+
+    function choosePromotion(piece) {
+      if (!pendingPromotion) return;
+      const move = pendingPromotion;
+      hidePromotionPicker();
+      submitMove(move.from, move.to, piece);
     }
 
     async function newGame(color) {
@@ -821,6 +1148,16 @@ INDEX_HTML = r"""
         document.getElementById("train-message").textContent = error.message;
       });
     });
+    document.getElementById("watch-self-play").addEventListener("change", () => {
+      if (state?.training) renderLiveSelfPlay(state.training);
+    });
+    document.getElementById("promotion-cancel").addEventListener("click", hidePromotionPicker);
+    promotionModal.addEventListener("click", event => {
+      if (event.target === promotionModal) hidePromotionPicker();
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") hidePromotionPicker();
+    });
     setInterval(() => refreshTraining().catch(() => {}), 1500);
 
     loadState().catch(error => {
@@ -836,8 +1173,10 @@ INDEX_HTML = r"""
 class WebSession:
     game: ChessGame = field(default_factory=ChessGame)
     ai: BasicAI = field(default_factory=BasicAI)
+    trainer: NeuralSelfTrainer | None = None
     message: str = "Click one of your pieces, then a target square."
     moves: list[str] = field(default_factory=list)
+    ai_thinking: bool = False
 
     def reset(self, color: PlayerColor) -> None:
         self.game = ChessGame(human_color=color)
@@ -846,11 +1185,11 @@ class WebSession:
         self.moves = []
         self.play_ai_if_needed()
 
-    def play_human_move(self, from_square: str, to_square: str) -> None:
+    def play_human_move(self, from_square: str, to_square: str, promotion: str | None = None, play_ai: bool = False) -> None:
         if not self.game.is_human_turn:
             raise ValueError("It is not your turn.")
 
-        move = self.parse_click_move(from_square, to_square)
+        move = self.parse_click_move(from_square, to_square, promotion)
         if move not in self.game.board.legal_moves:
             raise ValueError(f"Illegal move: {from_square}{to_square}")
 
@@ -858,37 +1197,55 @@ class WebSession:
         self.game.board.push(move)
         self.moves.append(f"You: {san}")
         self.message = f"You played {san}."
-        self.play_ai_if_needed()
+        if play_ai:
+            self.play_ai_if_needed()
+        elif self.game.is_ai_turn and not self.game.board.is_game_over(claim_draw=True):
+            self.message = f"You played {san}. AI is thinking..."
 
-    def parse_click_move(self, from_square: str, to_square: str) -> chess.Move:
+    def parse_click_move(self, from_square: str, to_square: str, promotion: str | None = None) -> chess.Move:
         try:
             from_index = chess.parse_square(from_square)
             to_index = chess.parse_square(to_square)
         except ValueError as exc:
             raise ValueError("Invalid square.") from exc
 
-        move = chess.Move(from_index, to_index)
+        promotion_piece = parse_promotion_piece(promotion)
+        move = chess.Move(from_index, to_index, promotion=promotion_piece)
         piece = self.game.board.piece_at(from_index)
         if (
             piece is not None
             and piece.piece_type == chess.PAWN
             and chess.square_rank(to_index) in {0, 7}
+            and promotion_piece is None
         ):
-            promoted = chess.Move(from_index, to_index, promotion=chess.QUEEN)
-            if promoted in self.game.board.legal_moves:
-                return promoted
+            raise ValueError("Choose a piece for pawn promotion.")
         return move
 
     def play_ai_if_needed(self) -> None:
         if not self.game.is_ai_turn or self.game.board.is_game_over(claim_draw=True):
             return
-        move = self.ai.choose_move(self.game.board)
-        if move is None:
-            return
-        book_name = self.ai.last_book_name
-        san = self.game.push_ai_move(move)
-        self.moves.append(f"AI: {san}")
-        self.message = f"AI played {san}" + (f" ({book_name})." if book_name else ".")
+        self.ai_thinking = True
+        self.ai.last_book_name = None
+        try:
+            book_move = self.ai.opening_book.choose(self.game.board)
+            if book_move is not None:
+                self.ai.last_book_name = book_move.name
+                move = book_move.move
+                engine_name = book_move.name
+            elif self.trainer is not None:
+                move = self.trainer.choose_engine_move(self.game.board, self.ai)
+                engine_name = "neural policy search"
+            else:
+                move = self.ai.choose_move(self.game.board)
+                engine_name = self.ai.last_book_name
+            if move is None:
+                return
+            book_name = self.ai.last_book_name
+            san = self.game.push_ai_move(move)
+            self.moves.append(f"AI: {san}")
+            self.message = f"AI played {san}" + (f" ({book_name or engine_name})." if book_name or engine_name else ".")
+        finally:
+            self.ai_thinking = False
 
     def state(self, evaluation: dict | None = None, policy: list[dict] | None = None) -> dict:
         board = self.game.board
@@ -917,6 +1274,8 @@ class WebSession:
             "human_color": self.game.human_color.value,
             "turn": "white" if board.turn == chess.WHITE else "black",
             "is_human_turn": self.game.is_human_turn,
+            "is_ai_turn": self.game.is_ai_turn,
+            "ai_thinking": self.ai_thinking,
             "game_over": board.is_game_over(claim_draw=True),
             "status": self.game.status(),
             "book": self.ai.last_book_name,
@@ -926,7 +1285,12 @@ class WebSession:
             "files": [chess.FILE_NAMES[file_index] for file_index in files],
             "squares": squares,
             "legal_moves": [
-                {"from": chess.square_name(move.from_square), "to": chess.square_name(move.to_square)}
+                {
+                    "from": chess.square_name(move.from_square),
+                    "to": chess.square_name(move.to_square),
+                    "promotion": promotion_piece_symbol(move.promotion),
+                    "uci": move.uci(),
+                }
                 for move in board.legal_moves
             ],
             "moves": self.moves[-24:],
@@ -947,10 +1311,41 @@ def parse_color(value: str) -> PlayerColor:
     return PlayerColor.BLACK if value == "black" else PlayerColor.WHITE
 
 
+def parse_promotion_piece(value: str | None) -> chess.PieceType | None:
+    if value in {None, "", "none"}:
+        return None
+    pieces = {
+        "q": chess.QUEEN,
+        "queen": chess.QUEEN,
+        "r": chess.ROOK,
+        "rook": chess.ROOK,
+        "b": chess.BISHOP,
+        "bishop": chess.BISHOP,
+        "n": chess.KNIGHT,
+        "knight": chess.KNIGHT,
+    }
+    piece = pieces.get(str(value).lower())
+    if piece is None:
+        raise ValueError("Promotion must be queen, rook, bishop, or knight.")
+    return piece
+
+
+def promotion_piece_symbol(piece: chess.PieceType | None) -> str | None:
+    if piece == chess.QUEEN:
+        return "q"
+    if piece == chess.ROOK:
+        return "r"
+    if piece == chess.BISHOP:
+        return "b"
+    if piece == chess.KNIGHT:
+        return "n"
+    return None
+
+
 def create_app(human_color: PlayerColor = PlayerColor.WHITE, trainer: NeuralSelfTrainer | None = None) -> Flask:
     app = Flask(__name__)
-    session = WebSession()
     trainer = trainer or NeuralSelfTrainer()
+    session = WebSession(trainer=trainer)
     session.reset(human_color)
 
     @app.get("/")
@@ -981,9 +1376,23 @@ def create_app(human_color: PlayerColor = PlayerColor.WHITE, trainer: NeuralSelf
     def move():
         payload = request.get_json(silent=True) or {}
         try:
-            session.play_human_move(str(payload.get("from", "")), str(payload.get("to", "")))
+            session.play_human_move(
+                str(payload.get("from", "")),
+                str(payload.get("to", "")),
+                payload.get("promotion"),
+            )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        response = session.state(
+            evaluation=trainer.evaluation_payload(session.game.board),
+            policy=trainer.policy_payload(session.game.board),
+        )
+        response["training"] = trainer.payload()
+        return jsonify(response)
+
+    @app.post("/api/ai-move")
+    def ai_move():
+        session.play_ai_if_needed()
         response = session.state(
             evaluation=trainer.evaluation_payload(session.game.board),
             policy=trainer.policy_payload(session.game.board),

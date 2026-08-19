@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import random
+import time
 
 import chess
 import chess.pgn
@@ -15,7 +16,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
-from chess_app.random_ai import BasicAI
+from chess_app.random_ai import (
+    BasicAI,
+    CENTER_SQUARES,
+    NEAR_CENTER_SQUARES,
+    evaluate_position,
+    evaluate_white_cp,
+)
 
 
 PROMOTION_TO_INDEX = {
@@ -31,10 +38,21 @@ PGN_LEARNING_RATE = 0.0005
 POLICY_LOSS_WEIGHT = 0.35
 SELF_PLAY_VALUE_LOSS_WEIGHT = 1.0
 PGN_VALUE_LOSS_WEIGHT = 0.0
-VALUE_TRUST_AFTER_POSITIONS = 10_000
-NEURAL_EVAL_WEIGHT = 0.25
+VALUE_TRUST_AFTER_SELF_PLAY_GAMES = 300
+NEURAL_EVAL_WEIGHT = 0.35
 PGN_CHUNK_POSITIONS = 50_000
-PGN_BATCH_SIZE = 1024
+PGN_BATCH_SIZE = 2048
+ENGINE_MOVE_TIME_SECONDS = 5.0
+ENGINE_MAX_DEPTH = 14
+ENGINE_ROOT_CANDIDATES = 16
+ENGINE_POLICY_WEIGHT = 400.0
+ENGINE_VALUE_WEIGHT = 350.0
+QUIESCENCE_MAX_DEPTH = 6
+INPUT_CHANNELS = 22
+MODEL_CHANNELS = 128
+MODEL_BLOCKS = 8
+NEURAL_SEARCH_WEIGHT = 0.65
+HEURISTIC_SEARCH_WEIGHT = 0.35
 
 
 PIECE_TO_CHANNEL = {
@@ -69,10 +87,18 @@ class ResidualBlock(nn.Module):
 
 
 class ResNetPolicyValueNet(nn.Module):
-    """Small chess ResNet with policy and value heads."""
+    """Chess ResNet with policy and value heads, inspired by AlphaZero / Stockfish NNUE."""
 
-    def __init__(self, input_channels: int = 18, channels: int = 48, blocks: int = 3) -> None:
+    def __init__(
+        self,
+        input_channels: int = INPUT_CHANNELS,
+        channels: int = MODEL_CHANNELS,
+        blocks: int = MODEL_BLOCKS,
+    ) -> None:
         super().__init__()
+        self.input_channels = input_channels
+        self.channels = channels
+        self.blocks_count = blocks
         self.stem = nn.Sequential(
             nn.Conv2d(input_channels, channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(channels),
@@ -80,26 +106,28 @@ class ResNetPolicyValueNet(nn.Module):
         )
         self.blocks = nn.Sequential(*[ResidualBlock(channels) for _ in range(blocks)])
         self.value_head = nn.Sequential(
-            nn.Conv2d(channels, 8, kernel_size=1),
-            nn.BatchNorm2d(8),
+            nn.Conv2d(channels, 32, kernel_size=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(8 * 8 * 8, 64),
+            nn.Linear(32 * 8 * 8, 256),
             nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Linear(256, 1),
             nn.Tanh(),
         )
         self.policy_head = nn.Sequential(
-            nn.Conv2d(channels, 16, kernel_size=1),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(channels, 32, kernel_size=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(16 * 8 * 8, MOVE_POLICY_SIZE),
+            nn.Linear(32 * 8 * 8, MOVE_POLICY_SIZE),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, policy_only: bool = False) -> tuple[torch.Tensor | None, torch.Tensor]:
         x = self.stem(x)
         x = self.blocks(x)
+        if policy_only:
+            return None, self.policy_head(x)
         value = self.value_head(x).squeeze(-1)
         policy_logits = self.policy_head(x)
         return value, policy_logits
@@ -128,6 +156,11 @@ class TrainingStats:
     active_positions: int = 0
     active_review_round: int = 0
     active_review_rounds: int = 0
+    live_self_play_fen: str | None = None
+    live_self_play_last_move: str | None = None
+    live_self_play_ply: int = 0
+    live_self_play_result: str | None = None
+    live_self_play_moves: list[str] = field(default_factory=list)
 
     def payload(self) -> dict:
         return {
@@ -149,6 +182,13 @@ class TrainingStats:
             "active_positions": self.active_positions,
             "active_review_round": self.active_review_round,
             "active_review_rounds": self.active_review_rounds,
+            "live_self_play": {
+                "fen": self.live_self_play_fen,
+                "last_move": self.live_self_play_last_move,
+                "ply": self.live_self_play_ply,
+                "result": self.live_self_play_result,
+                "moves": self.live_self_play_moves[-16:],
+            },
         }
 
 
@@ -163,6 +203,7 @@ class NeuralSelfTrainer:
         self.model_path = Path(model_path)
         self.stats_path = Path(stats_path) if stats_path is not None else self.model_path.with_name("training_stats.json")
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        self._model_incompatible = False
         self.load_if_available()
         self.load_stats_if_available()
 
@@ -174,7 +215,11 @@ class NeuralSelfTrainer:
             self.model.load_state_dict(checkpoint["model"])
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         except RuntimeError:
-            self.stats.message = "Existing value-only model is incompatible; started policy/value model."
+            self.stats.message = "Model architecture changed; starting fresh with larger model (8 blocks, 128ch)."
+            self._model_incompatible = True
+            # Reset trust counters so random weights are not used for evaluation
+            self.stats.total_self_play_games = 0
+            self.stats.total_positions = 0
             return
         self.stats.total_self_play_games = checkpoint.get("total_self_play_games", 0)
         self.stats.total_review_rounds = checkpoint.get("total_review_rounds", 0)
@@ -196,6 +241,13 @@ class NeuralSelfTrainer:
             data = json.loads(self.stats_path.read_text())
         except (OSError, json.JSONDecodeError):
             self.stats.message = "Stats file could not be read; using model checkpoint stats."
+            return
+
+        if self._model_incompatible:
+            # Model was incompatible; only restore non-trust stats
+            self.stats.running = False
+            self.stats.active_task = "idle"
+            self.stats.message = "New model started (architecture changed). Training stats reset."
             return
 
         self.stats.total_self_play_games = int(data.get("total_self_play_games", self.stats.total_self_play_games))
@@ -265,6 +317,11 @@ class NeuralSelfTrainer:
             self.stats.active_positions = 0
             self.stats.active_review_round = 0
             self.stats.active_review_rounds = max(1, min(int(review_rounds), 200))
+            self.stats.live_self_play_fen = None
+            self.stats.live_self_play_last_move = None
+            self.stats.live_self_play_ply = 0
+            self.stats.live_self_play_result = None
+            self.stats.live_self_play_moves = []
             self.stats.message = (
                 f"Starting self-play: {games} games, {review_rounds} review rounds, "
                 f"lr {self.stats.learning_rate:g}."
@@ -409,6 +466,52 @@ class NeuralSelfTrainer:
                 self.stats.running = False
                 self.stats.active_task = "idle"
 
+    def train_finished_game_moves(
+        self,
+        moves: list[chess.Move],
+        result: str,
+        review_rounds: int = PGN_REVIEW_ROUNDS,
+        learning_rate: float = PGN_LEARNING_RATE,
+        label: str = "Lichess AI review",
+    ) -> None:
+        review_rounds = max(1, min(review_rounds, 200))
+        samples = self.samples_from_moves(moves, result)
+        if not samples:
+            return
+
+        with self.lock:
+            if self.stats.running:
+                self.stats.message = f"Skipped {label}: trainer is already busy."
+                return
+            self.set_learning_rate(learning_rate)
+            self.stats.running = True
+            self.stats.active_task = "lichess-ai"
+            self.stats.active_games = 1
+            self.stats.active_positions = len(samples)
+            self.stats.active_review_round = 0
+            self.stats.active_review_rounds = review_rounds
+            self.stats.total_positions += len(samples)
+            self.stats.message = f"Starting {label}: {len(samples)} positions, result {result}."
+
+        try:
+            self.train_samples(
+                samples,
+                review_rounds,
+                label,
+                value_loss_weight=PGN_VALUE_LOSS_WEIGHT,
+                batch_size=PGN_BATCH_SIZE,
+            )
+            with self.lock:
+                self.stats.message = f"Finished {label}: {len(samples)} positions, result {result}."
+            self.save()
+        except Exception as exc:
+            with self.lock:
+                self.stats.message = f"{label} failed: {exc}"
+        finally:
+            with self.lock:
+                self.stats.running = False
+                self.stats.active_task = "idle"
+
     def train_samples(
         self,
         samples: list[tuple[torch.Tensor, float, int]],
@@ -431,12 +534,18 @@ class NeuralSelfTrainer:
             batches = 0
             for batch_inputs, batch_value_targets, batch_policy_targets in loader:
                 batch_inputs = batch_inputs.to(self.device)
-                batch_value_targets = batch_value_targets.to(self.device)
                 batch_policy_targets = batch_policy_targets.to(self.device)
                 with self.model_lock:
                     self.optimizer.zero_grad()
-                    value_predictions, policy_logits = self.model(batch_inputs)
-                    value_loss = F.mse_loss(value_predictions, batch_value_targets)
+                    if value_loss_weight > 0.0:
+                        batch_value_targets = batch_value_targets.to(self.device)
+                        value_predictions, policy_logits = self.model(batch_inputs)
+                        if value_predictions is None:
+                            raise RuntimeError("Value head was skipped during value training.")
+                        value_loss = F.mse_loss(value_predictions, batch_value_targets)
+                    else:
+                        _, policy_logits = self.model(batch_inputs, policy_only=True)
+                        value_loss = batch_inputs.new_tensor(0.0)
                     policy_loss = F.cross_entropy(policy_logits, batch_policy_targets)
                     loss = value_loss_weight * value_loss + POLICY_LOSS_WEIGHT * policy_loss
                     loss.backward()
@@ -467,8 +576,15 @@ class NeuralSelfTrainer:
         samples: list[tuple[torch.Tensor, float, int]] = []
         for game_index in range(games):
             board = chess.Board()
-            ai = BasicAI(seed=game_index, search_depth=1)
+            ai = BasicAI(seed=game_index, search_depth=2)
             history: list[tuple[chess.Board, bool, chess.Move]] = []
+            live_moves: list[str] = []
+            with self.lock:
+                self.stats.live_self_play_fen = board.fen()
+                self.stats.live_self_play_last_move = None
+                self.stats.live_self_play_ply = 0
+                self.stats.live_self_play_result = None
+                self.stats.live_self_play_moves = []
 
             for _ in range(600):
                 if board.is_game_over(claim_draw=True):
@@ -477,8 +593,19 @@ class NeuralSelfTrainer:
                 move = self.choose_self_play_move(board, ai)
                 if move is None:
                     break
+                san = board.san(move)
                 history.append((position, board.turn, move))
                 board.push(move)
+                live_moves.append(san)
+                with self.lock:
+                    self.stats.live_self_play_fen = board.fen()
+                    self.stats.live_self_play_last_move = san
+                    self.stats.live_self_play_ply = len(history)
+                    self.stats.live_self_play_moves = live_moves[-16:]
+                    self.stats.message = (
+                        f"Self-play game {game_index + 1}/{games}, "
+                        f"move {len(history)}: {san}."
+                    )
 
             result = board.result(claim_draw=True)
             if result == "*":
@@ -490,9 +617,14 @@ class NeuralSelfTrainer:
                 self.stats.total_positions += len(history)
                 self.stats.active_games += 1
                 self.stats.active_positions += len(history)
+                self.stats.live_self_play_fen = board.fen()
+                self.stats.live_self_play_last_move = live_moves[-1] if live_moves else None
+                self.stats.live_self_play_ply = len(history)
+                self.stats.live_self_play_result = result
+                self.stats.live_self_play_moves = live_moves[-16:]
                 self.stats.message = (
                     f"Self-play generated {self.stats.active_games}/{games} games, "
-                    f"{self.stats.active_positions} positions."
+                    f"{self.stats.active_positions} positions. Last result: {result}."
                 )
                 should_save_stats = self.stats.active_games % 10 == 0 or self.stats.active_games == games
             if should_save_stats:
@@ -514,14 +646,338 @@ class NeuralSelfTrainer:
                 _, logits = self.model(tensor)
             scores = logits[0].detach().cpu()
 
+        # Also get value-based scores for each legal move
+        value_scores: dict[chess.Move, float] = {}
+        with self.lock:
+            has_enough_games = self.stats.total_self_play_games >= VALUE_TRUST_AFTER_SELF_PLAY_GAMES
+        if has_enough_games:
+            try:
+                encoded_after = []
+                for move in legal_moves:
+                    board.push(move)
+                    encoded_after.append(encode_board(board))
+                    board.pop()
+                batch = torch.stack(encoded_after).to(self.device)
+                self.model.eval()
+                with torch.no_grad():
+                    with self.model_lock:
+                        values, _ = self.model(batch)
+                    if values is not None:
+                        raw = values.detach().cpu().tolist()
+                        for move, side_val in zip(legal_moves, raw):
+                            board.push(move)
+                            white_val = side_val if board.turn == chess.WHITE else -side_val
+                            board.pop()
+                            value_scores[move] = white_val if board.turn == chess.WHITE else -white_val
+            except Exception:
+                value_scores = {}
+
         best_move = legal_moves[0]
         best_score = float("-inf")
         for move in legal_moves:
-            score = float(scores[move_to_policy_index(move)]) + fallback_ai.move_hint(board, move) / 2000.0
+            policy_score = float(scores[move_to_policy_index(move)])
+            heuristic_score = fallback_ai.move_hint(board, move) / 2000.0
+            value_score = value_scores.get(move, 0.0)
+            # Blend policy + value + heuristic for self-play move selection
+            score = 0.5 * policy_score + 0.3 * value_score + 0.2 * heuristic_score
+            # Add temperature-style noise for exploration
+            score += random.gauss(0, 0.05)
             if score > best_score:
                 best_score = score
                 best_move = move
         return best_move
+
+    def choose_engine_move(
+        self,
+        board: chess.Board,
+        fallback_ai: BasicAI,
+        time_limit_seconds: float = ENGINE_MOVE_TIME_SECONDS,
+        max_depth: int = ENGINE_MAX_DEPTH,
+    ) -> chess.Move | None:
+        legal_moves = list(board.legal_moves)
+        if not legal_moves:
+            return None
+
+        deadline = time.monotonic() + max(0.05, time_limit_seconds)
+        root_color = board.turn
+        policy_scores = self.policy_scores_for_moves(board, legal_moves)
+        ordered_moves = self.order_engine_moves(board, legal_moves, fallback_ai, policy_scores)
+        root_candidates = ordered_moves[: min(len(ordered_moves), ENGINE_ROOT_CANDIDATES)]
+        root_value_scores = self.root_value_scores_for_moves(board, root_candidates, root_color)
+        transposition: dict[tuple[str, int, bool], float] = {}
+        best_move = root_candidates[0]
+        best_score = float("-inf")
+
+        for depth in range(1, max(1, max_depth) + 1):
+            if time.monotonic() >= deadline:
+                break
+            depth_best_move = best_move
+            depth_best_score = float("-inf")
+            completed_depth = True
+            for move in root_candidates:
+                if time.monotonic() >= deadline:
+                    completed_depth = False
+                    break
+                board.push(move)
+                try:
+                    score = self.search_engine_position(
+                        board,
+                        depth - 1,
+                        -1_000_000_000.0,
+                        1_000_000_000.0,
+                        root_color,
+                        fallback_ai,
+                        deadline,
+                        transposition,
+                    )
+                finally:
+                    board.pop()
+                score += self.root_move_bonus(board, move, fallback_ai, policy_scores, root_value_scores)
+                if score > depth_best_score:
+                    depth_best_score = score
+                    depth_best_move = move
+            if completed_depth:
+                best_move = depth_best_move
+                best_score = depth_best_score
+
+        return best_move if best_score != float("-inf") else root_candidates[0]
+
+    def search_engine_position(
+        self,
+        board: chess.Board,
+        depth: int,
+        alpha: float,
+        beta: float,
+        root_color: bool,
+        fallback_ai: BasicAI,
+        deadline: float,
+        transposition: dict[tuple[str, int, bool], float],
+    ) -> float:
+        if time.monotonic() >= deadline:
+            return self.static_engine_score(board, root_color)
+        if depth <= 0 or board.is_game_over(claim_draw=True):
+            return self.quiescence_search(board, root_color, alpha, beta, QUIESCENCE_MAX_DEPTH, deadline)
+
+        key = (board.transposition_key() if hasattr(board, "transposition_key") else board.board_fen(), depth, board.turn)
+        cached = transposition.get(key)
+        if cached is not None:
+            return cached
+
+        legal_moves = list(board.legal_moves)
+        ordered_moves = fallback_ai.order_moves(board, legal_moves)
+        if board.turn == root_color:
+            best = -1_000_000_000.0
+            for move in ordered_moves:
+                board.push(move)
+                try:
+                    score = self.search_engine_position(
+                        board,
+                        depth - 1,
+                        alpha,
+                        beta,
+                        root_color,
+                        fallback_ai,
+                        deadline,
+                        transposition,
+                    )
+                finally:
+                    board.pop()
+                best = max(best, score)
+                alpha = max(alpha, best)
+                if alpha >= beta:
+                    break
+            transposition[key] = best
+            return best
+
+        best = 1_000_000_000.0
+        for move in ordered_moves:
+            board.push(move)
+            try:
+                score = self.search_engine_position(
+                    board,
+                    depth - 1,
+                    alpha,
+                    beta,
+                    root_color,
+                    fallback_ai,
+                    deadline,
+                    transposition,
+                )
+            finally:
+                board.pop()
+            best = min(best, score)
+            beta = min(beta, best)
+            if alpha >= beta:
+                break
+        transposition[key] = best
+        return best
+
+    def quiescence_search(
+        self,
+        board: chess.Board,
+        root_color: bool,
+        alpha: float,
+        beta: float,
+        depth: int,
+        deadline: float,
+    ) -> float:
+        stand_pat = self.static_engine_score(board, root_color)
+        if depth <= 0 or board.is_game_over(claim_draw=True) or time.monotonic() >= deadline:
+            return stand_pat
+
+        if board.turn == root_color:
+            if stand_pat >= beta:
+                return stand_pat
+            alpha = max(alpha, stand_pat)
+            best = stand_pat
+            for move in self.noisy_moves(board):
+                board.push(move)
+                try:
+                    score = self.quiescence_search(board, root_color, alpha, beta, depth - 1, deadline)
+                finally:
+                    board.pop()
+                best = max(best, score)
+                alpha = max(alpha, best)
+                if alpha >= beta:
+                    break
+            return best
+
+        if stand_pat <= alpha:
+            return stand_pat
+        beta = min(beta, stand_pat)
+        best = stand_pat
+        for move in self.noisy_moves(board):
+            board.push(move)
+            try:
+                score = self.quiescence_search(board, root_color, alpha, beta, depth - 1, deadline)
+            finally:
+                board.pop()
+            best = min(best, score)
+            beta = min(beta, best)
+            if alpha >= beta:
+                break
+        return best
+
+    def noisy_moves(self, board: chess.Board) -> list[chess.Move]:
+        moves = []
+        for move in board.legal_moves:
+            if board.is_capture(move) or move.promotion:
+                moves.append(move)
+                continue
+            board.push(move)
+            try:
+                if board.is_check():
+                    moves.append(move)
+            finally:
+                board.pop()
+        return sorted(moves, key=lambda move: board.is_capture(move), reverse=True)
+
+    def static_engine_score(self, board: chess.Board, root_color: bool) -> float:
+        if board.is_checkmate():
+            return -1_000_000.0 if board.turn == root_color else 1_000_000.0
+        if board.is_stalemate() or board.is_insufficient_material():
+            return 0.0
+
+        # Blend enhanced heuristic with neural evaluation when trusted
+        heuristic_cp = float(evaluate_white_cp(board))
+        with self.lock:
+            trusted = self.stats.total_self_play_games >= VALUE_TRUST_AFTER_SELF_PLAY_GAMES
+
+        if trusted:
+            try:
+                neural_val = self.evaluate_white(board)
+                neural_cp = neural_val * 1000.0
+                blended = NEURAL_SEARCH_WEIGHT * neural_cp + HEURISTIC_SEARCH_WEIGHT * heuristic_cp
+                return blended if root_color == chess.WHITE else -blended
+            except Exception:
+                pass
+
+        return heuristic_cp if root_color == chess.WHITE else -heuristic_cp
+
+    def order_engine_moves(
+        self,
+        board: chess.Board,
+        legal_moves: list[chess.Move],
+        fallback_ai: BasicAI,
+        policy_scores: dict[chess.Move, float],
+    ) -> list[chess.Move]:
+        return sorted(
+            legal_moves,
+            key=lambda move: self.root_move_bonus(board, move, fallback_ai, policy_scores),
+            reverse=True,
+        )
+
+    def root_move_bonus(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        fallback_ai: BasicAI,
+        policy_scores: dict[chess.Move, float],
+        root_value_scores: dict[chess.Move, float] | None = None,
+    ) -> float:
+        return (
+            ENGINE_POLICY_WEIGHT * policy_scores.get(move, 0.0)
+            + ENGINE_VALUE_WEIGHT * (root_value_scores or {}).get(move, 0.0)
+            + float(fallback_ai.move_hint(board, move))
+            + float(opening_principle_score(board, move))
+        )
+
+    def root_value_scores_for_moves(
+        self,
+        board: chess.Board,
+        moves: list[chess.Move],
+        root_color: bool,
+    ) -> dict[chess.Move, float]:
+        with self.lock:
+            trusted = self.stats.total_self_play_games >= VALUE_TRUST_AFTER_SELF_PLAY_GAMES
+        if not trusted or not moves:
+            return {}
+
+        encoded_positions = []
+        for move in moves:
+            board.push(move)
+            try:
+                encoded_positions.append(encode_board(board))
+            finally:
+                board.pop()
+
+        self.model.eval()
+        with torch.no_grad():
+            tensor = torch.stack(encoded_positions).to(self.device)
+            with self.model_lock:
+                values, _ = self.model(tensor)
+            if values is None:
+                return {}
+            raw_values = values.detach().cpu().tolist()
+
+        scores = {}
+        for move, side_to_move_value in zip(moves, raw_values):
+            board.push(move)
+            try:
+                white_value = side_to_move_value if board.turn == chess.WHITE else -side_to_move_value
+            finally:
+                board.pop()
+            root_value = white_value if root_color == chess.WHITE else -white_value
+            scores[move] = clamp_value(float(root_value))
+        return scores
+
+    def policy_scores_for_moves(self, board: chess.Board, legal_moves: list[chess.Move]) -> dict[chess.Move, float]:
+        self.model.eval()
+        with torch.no_grad():
+            tensor = encode_board(board).unsqueeze(0).to(self.device)
+            with self.model_lock:
+                _, logits = self.model(tensor, policy_only=True)
+            logits = logits[0].detach().cpu()
+
+        raw_scores = [float(logits[move_to_policy_index(move)]) for move in legal_moves]
+        min_score = min(raw_scores)
+        max_score = max(raw_scores)
+        if math.isclose(min_score, max_score):
+            return {move: 0.0 for move in legal_moves}
+        return {
+            move: (score - min_score) / (max_score - min_score)
+            for move, score in zip(legal_moves, raw_scores)
+        }
 
     def generate_pgn_samples(self, pgn_text: str) -> tuple[list[tuple[torch.Tensor, float, int]], int]:
         samples: list[tuple[torch.Tensor, float, int]] = []
@@ -552,6 +1008,19 @@ class NeuralSelfTrainer:
                 self.save_stats()
 
         return samples, game_count
+
+    def samples_from_moves(self, moves: list[chess.Move], result: str) -> list[tuple[torch.Tensor, float, int]]:
+        if result not in {"1-0", "0-1", "1/2-1/2"}:
+            return []
+
+        board = chess.Board()
+        samples: list[tuple[torch.Tensor, float, int]] = []
+        for move in moves:
+            if move not in board.legal_moves:
+                return []
+            samples.append((encode_board(board), outcome_value(result, board.turn), move_to_policy_index(move)))
+            board.push(move)
+        return samples
 
     def samples_from_pgn_game(self, game: chess.pgn.Game) -> list[tuple[torch.Tensor, float, int]]:
         result = game.headers.get("Result", "*")
@@ -610,9 +1079,9 @@ class NeuralSelfTrainer:
         neural_white_value = self.evaluate_white(board)
         heuristic_value = heuristic_white_value(board)
         with self.lock:
-            trained_positions = self.stats.total_positions
+            self_play_games = self.stats.total_self_play_games
 
-        neural_weight = NEURAL_EVAL_WEIGHT if trained_positions >= VALUE_TRUST_AFTER_POSITIONS else 0.0
+        neural_weight = NEURAL_EVAL_WEIGHT if self_play_games >= VALUE_TRUST_AFTER_SELF_PLAY_GAMES else 0.0
         if abs(neural_white_value) > 0.95 and abs(heuristic_value) < 0.25:
             neural_weight = 0.0
 
@@ -631,14 +1100,14 @@ class NeuralSelfTrainer:
         with self.lock:
             payload = self.stats.payload()
         payload["device"] = str(self.device)
-        payload["architecture"] = "ResNet CNN + policy head + value head"
+        payload["architecture"] = f"ResNet {MODEL_BLOCKS}×{MODEL_CHANNELS}ch + policy/value heads"
         payload["pgn_review_rounds"] = PGN_REVIEW_ROUNDS
         payload["pgn_learning_rate"] = PGN_LEARNING_RATE
         return payload
 
 
 def encode_board(board: chess.Board) -> torch.Tensor:
-    tensor = torch.zeros((18, 8, 8), dtype=torch.float32)
+    tensor = torch.zeros((INPUT_CHANNELS, 8, 8), dtype=torch.float32)
     for square, piece in board.piece_map().items():
         channel = PIECE_TO_CHANNEL[piece]
         rank = chess.square_rank(square)
@@ -651,7 +1120,31 @@ def encode_board(board: chess.Board) -> torch.Tensor:
     tensor[14, :, :] = 1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0
     tensor[15, :, :] = 1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0
     tensor[16, :, :] = 1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0
-    tensor[17, :, :] = min(board.fullmove_number / 100.0, 1.0)
+    tensor[17, :, :] = min(board.fullmove_number, 120) / 120.0
+
+    # Channel 18: en passant target square
+    if board.ep_square is not None:
+        ep_rank = chess.square_rank(board.ep_square)
+        ep_file = chess.square_file(board.ep_square)
+        tensor[18, 7 - ep_rank, ep_file] = 1.0
+
+    # Channel 19: halfmove clock (normalized, capped at 100)
+    tensor[19, :, :] = min(board.halfmove_clock, 100) / 100.0
+
+    # Channel 20-21: material balance (normalised)
+    _piece_material = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
+    white_mat = 0
+    black_mat = 0
+    for piece in board.piece_map().values():
+        v = _piece_material[piece.piece_type]
+        if piece.color == chess.WHITE:
+            white_mat += v
+        else:
+            black_mat += v
+    max_mat = 39.0  # starting material per side (excluding king)
+    tensor[20, :, :] = white_mat / max_mat
+    tensor[21, :, :] = black_mat / max_mat
+
     return tensor
 
 
@@ -674,28 +1167,47 @@ def heuristic_white_value(board: chess.Board) -> float:
     if board.is_stalemate() or board.is_insufficient_material():
         return 0.0
 
-    piece_values = {
-        chess.PAWN: 100,
-        chess.KNIGHT: 320,
-        chess.BISHOP: 330,
-        chess.ROOK: 500,
-        chess.QUEEN: 900,
-        chess.KING: 0,
-    }
-    center_squares = {chess.D4, chess.E4, chess.D5, chess.E5}
-    near_center_squares = {chess.C3, chess.D3, chess.E3, chess.F3, chess.C4, chess.F4, chess.C5, chess.F5, chess.C6, chess.D6, chess.E6, chess.F6}
+    cp = evaluate_white_cp(board)
+    return clamp_value(math.tanh(cp / 900.0))
+
+
+def opening_principle_score(board: chess.Board, move: chess.Move) -> int:
+    if board.fullmove_number > 12:
+        return 0
+
+    moving_piece = board.piece_at(move.from_square)
+    if moving_piece is None:
+        return 0
 
     score = 0
-    for square, piece in board.piece_map().items():
-        sign = 1 if piece.color == chess.WHITE else -1
-        score += sign * piece_values[piece.piece_type]
-        if square in center_squares:
-            score += sign * 20
-        elif square in near_center_squares:
-            score += sign * 8
+    gives_check = False
+    board.push(move)
+    try:
+        gives_check = board.is_check()
+    finally:
+        board.pop()
 
-    # Convert centipawn-like scores into a stable [-1, 1] bar value.
-    return clamp_value(math.tanh(score / 900.0))
+    is_capture = board.is_capture(move)
+    if board.is_castling(move):
+        score += 120
+
+    if moving_piece.piece_type == chess.QUEEN and not is_capture and not gives_check:
+        score -= 260
+
+    if moving_piece.piece_type in {chess.KNIGHT, chess.BISHOP}:
+        from_rank = chess.square_rank(move.from_square)
+        home_rank = 0 if moving_piece.color == chess.WHITE else 7
+        if from_rank == home_rank:
+            score += 70
+        if move.to_square in CENTER_SQUARES:
+            score += 35
+        elif move.to_square in NEAR_CENTER_SQUARES:
+            score += 20
+
+    if moving_piece.piece_type == chess.PAWN and move.to_square in CENTER_SQUARES:
+        score += 45
+
+    return score
 
 
 def move_to_policy_index(move: chess.Move) -> int:
