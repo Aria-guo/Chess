@@ -1,0 +1,1 @@
+check material data generation: read /tmp/material_data_gen.log. If complete, train the value-only model on this data, verify ranking, then set up Lichess games. Background task bg_18cf2c6f.

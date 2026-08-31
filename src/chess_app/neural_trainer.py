@@ -39,7 +39,7 @@ POLICY_LOSS_WEIGHT = 0.35
 SELF_PLAY_VALUE_LOSS_WEIGHT = 1.0
 PGN_VALUE_LOSS_WEIGHT = 0.0
 VALUE_TRUST_AFTER_SELF_PLAY_GAMES = 300
-NEURAL_EVAL_WEIGHT = 0.35
+NEURAL_EVAL_WEIGHT = 0.15
 PGN_CHUNK_POSITIONS = 50_000
 PGN_BATCH_SIZE = 2048
 ENGINE_MOVE_TIME_SECONDS = 5.0
@@ -51,8 +51,12 @@ QUIESCENCE_MAX_DEPTH = 6
 INPUT_CHANNELS = 22
 MODEL_CHANNELS = 128
 MODEL_BLOCKS = 8
-NEURAL_SEARCH_WEIGHT = 0.65
-HEURISTIC_SEARCH_WEIGHT = 0.35
+# Small model for effective training with limited data
+SMALL_MODEL_CHANNELS = 64
+SMALL_MODEL_BLOCKS = 4
+SMALL_MODEL_DROPOUT = 0.1
+NEURAL_SEARCH_WEIGHT = 0.20
+HEURISTIC_SEARCH_WEIGHT = 0.80
 
 
 PIECE_TO_CHANNEL = {
@@ -72,16 +76,19 @@ PIECE_TO_CHANNEL = {
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, dropout: float = 0.0) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm2d(channels)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(channels)
+        self.dropout = nn.Dropout2d(p=dropout) if dropout > 0 else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
         x = F.relu(self.bn1(self.conv1(x)))
+        if self.dropout is not None:
+            x = self.dropout(x)
         x = self.bn2(self.conv2(x))
         return F.relu(x + identity)
 
@@ -94,6 +101,7 @@ class ResNetPolicyValueNet(nn.Module):
         input_channels: int = INPUT_CHANNELS,
         channels: int = MODEL_CHANNELS,
         blocks: int = MODEL_BLOCKS,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.input_channels = input_channels
@@ -104,7 +112,7 @@ class ResNetPolicyValueNet(nn.Module):
             nn.BatchNorm2d(channels),
             nn.ReLU(),
         )
-        self.blocks = nn.Sequential(*[ResidualBlock(channels) for _ in range(blocks)])
+        self.blocks = nn.Sequential(*[ResidualBlock(channels, dropout=dropout) for _ in range(blocks)])
         self.value_head = nn.Sequential(
             nn.Conv2d(channels, 32, kernel_size=1),
             nn.BatchNorm2d(32),
@@ -131,6 +139,60 @@ class ResNetPolicyValueNet(nn.Module):
         value = self.value_head(x).squeeze(-1)
         policy_logits = self.policy_head(x)
         return value, policy_logits
+
+
+class ValueOnlyNet(nn.Module):
+    """Value-only neural network for position evaluation.
+
+    Inspired by Stockfish NNUE: no policy head, focuses entirely on
+    evaluating positions.  Much smaller (~1M params) so it can actually
+    learn from limited training data without overfitting.
+    """
+
+    def __init__(
+        self,
+        input_channels: int = INPUT_CHANNELS,
+        channels: int = SMALL_MODEL_CHANNELS,
+        blocks: int = SMALL_MODEL_BLOCKS,
+        dropout: float = SMALL_MODEL_DROPOUT,
+    ) -> None:
+        super().__init__()
+        self.input_channels = input_channels
+        self.channels = channels
+        self.blocks_count = blocks
+
+        # Stem: input -> channels
+        self.stem = nn.Sequential(
+            nn.Conv2d(input_channels, channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(),
+        )
+
+        # Residual blocks
+        self.blocks = nn.Sequential(
+            *[ResidualBlock(channels, dropout=dropout) for _ in range(blocks)]
+        )
+
+        # Value head: deeper for better evaluation
+        self.value_head = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(32 * 8 * 8, 128),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(128, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Tanh(),
+        )
+
+    def forward(self, x: torch.Tensor, policy_only: bool = False) -> tuple[torch.Tensor, None]:
+        features = self.stem(x)
+        features = self.blocks(features)
+        value = self.value_head(features).squeeze(-1)
+        return value, None
 
 
 ResNetValueNet = ResNetPolicyValueNet
@@ -195,7 +257,7 @@ class TrainingStats:
 class NeuralSelfTrainer:
     def __init__(self, model_path: str = "models/resnet_policy_value.pt", stats_path: str | None = None) -> None:
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-        self.model = ResNetPolicyValueNet().to(self.device)
+        self.model = ValueOnlyNet().to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
         self.stats = TrainingStats(model_path=model_path)
         self.lock = threading.Lock()
@@ -214,8 +276,8 @@ class NeuralSelfTrainer:
         try:
             self.model.load_state_dict(checkpoint["model"])
             self.optimizer.load_state_dict(checkpoint["optimizer"])
-        except RuntimeError:
-            self.stats.message = "Model architecture changed; starting fresh with larger model (8 blocks, 128ch)."
+        except (RuntimeError, KeyError):
+            self.stats.message = "Model architecture changed; starting fresh with value-only model (0.6M params)."
             self._model_incompatible = True
             # Reset trust counters so random weights are not used for evaluation
             self.stats.total_self_play_games = 0
@@ -534,31 +596,22 @@ class NeuralSelfTrainer:
             batches = 0
             for batch_inputs, batch_value_targets, batch_policy_targets in loader:
                 batch_inputs = batch_inputs.to(self.device)
-                batch_policy_targets = batch_policy_targets.to(self.device)
+                batch_value_targets = batch_value_targets.to(self.device)
                 with self.model_lock:
                     self.optimizer.zero_grad()
-                    if value_loss_weight > 0.0:
-                        batch_value_targets = batch_value_targets.to(self.device)
-                        value_predictions, policy_logits = self.model(batch_inputs)
-                        if value_predictions is None:
-                            raise RuntimeError("Value head was skipped during value training.")
-                        value_loss = F.mse_loss(value_predictions, batch_value_targets)
-                    else:
-                        _, policy_logits = self.model(batch_inputs, policy_only=True)
-                        value_loss = batch_inputs.new_tensor(0.0)
-                    policy_loss = F.cross_entropy(policy_logits, batch_policy_targets)
-                    loss = value_loss_weight * value_loss + POLICY_LOSS_WEIGHT * policy_loss
+                    value_predictions, _ = self.model(batch_inputs)
+                    value_loss = F.mse_loss(value_predictions, batch_value_targets)
+                    loss = value_loss
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
                 total_loss += float(loss.detach().cpu())
                 total_value_loss += float(value_loss.detach().cpu())
-                total_policy_loss += float(policy_loss.detach().cpu())
                 batches += 1
 
             avg_loss = total_loss / max(1, batches)
             avg_value_loss = total_value_loss / max(1, batches)
-            avg_policy_loss = total_policy_loss / max(1, batches)
+            avg_policy_loss = 0.0
             with self.lock:
                 self.stats.last_loss = avg_loss
                 self.stats.last_value_loss = avg_value_loss
@@ -576,7 +629,7 @@ class NeuralSelfTrainer:
         samples: list[tuple[torch.Tensor, float, int]] = []
         for game_index in range(games):
             board = chess.Board()
-            ai = BasicAI(seed=game_index, search_depth=2)
+            ai = BasicAI(seed=game_index, search_depth=1)
             history: list[tuple[chess.Board, bool, chess.Move]] = []
             live_moves: list[str] = []
             with self.lock:
@@ -639,14 +692,7 @@ class NeuralSelfTrainer:
         if self.stats.total_positions < 1 or random.random() < 0.10:
             return fallback_ai.choose_move(board)
 
-        self.model.eval()
-        with torch.no_grad():
-            tensor = encode_board(board).unsqueeze(0).to(self.device)
-            with self.model_lock:
-                _, logits = self.model(tensor)
-            scores = logits[0].detach().cpu()
-
-        # Also get value-based scores for each legal move
+        # Value-only model: use value scores for move selection
         value_scores: dict[chess.Move, float] = {}
         with self.lock:
             has_enough_games = self.stats.total_self_play_games >= VALUE_TRUST_AFTER_SELF_PLAY_GAMES
@@ -675,11 +721,10 @@ class NeuralSelfTrainer:
         best_move = legal_moves[0]
         best_score = float("-inf")
         for move in legal_moves:
-            policy_score = float(scores[move_to_policy_index(move)])
             heuristic_score = fallback_ai.move_hint(board, move) / 2000.0
             value_score = value_scores.get(move, 0.0)
-            # Blend policy + value + heuristic for self-play move selection
-            score = 0.5 * policy_score + 0.3 * value_score + 0.2 * heuristic_score
+            # Blend value + heuristic for self-play move selection
+            score = 0.6 * value_score + 0.4 * heuristic_score
             # Add temperature-style noise for exploration
             score += random.gauss(0, 0.05)
             if score > best_score:
@@ -915,10 +960,11 @@ class NeuralSelfTrainer:
         policy_scores: dict[chess.Move, float],
         root_value_scores: dict[chess.Move, float] | None = None,
     ) -> float:
+        # Don't use move_hint - it gives too much bonus to captures without considering recaptures
+        # The search already handles tactical considerations properly
         return (
             ENGINE_POLICY_WEIGHT * policy_scores.get(move, 0.0)
             + ENGINE_VALUE_WEIGHT * (root_value_scores or {}).get(move, 0.0)
-            + float(fallback_ai.move_hint(board, move))
             + float(opening_principle_score(board, move))
         )
 
@@ -962,22 +1008,8 @@ class NeuralSelfTrainer:
         return scores
 
     def policy_scores_for_moves(self, board: chess.Board, legal_moves: list[chess.Move]) -> dict[chess.Move, float]:
-        self.model.eval()
-        with torch.no_grad():
-            tensor = encode_board(board).unsqueeze(0).to(self.device)
-            with self.model_lock:
-                _, logits = self.model(tensor, policy_only=True)
-            logits = logits[0].detach().cpu()
-
-        raw_scores = [float(logits[move_to_policy_index(move)]) for move in legal_moves]
-        min_score = min(raw_scores)
-        max_score = max(raw_scores)
-        if math.isclose(min_score, max_score):
-            return {move: 0.0 for move in legal_moves}
-        return {
-            move: (score - min_score) / (max_score - min_score)
-            for move, score in zip(legal_moves, raw_scores)
-        }
+        # Value-only model has no policy head; return uniform scores
+        return {move: 0.0 for move in legal_moves}
 
     def generate_pgn_samples(self, pgn_text: str) -> tuple[list[tuple[torch.Tensor, float, int]], int]:
         samples: list[tuple[torch.Tensor, float, int]] = []
@@ -1043,33 +1075,8 @@ class NeuralSelfTrainer:
                 return float(value.detach().cpu()[0])
 
     def policy_payload(self, board: chess.Board, limit: int = 5) -> list[dict]:
-        legal_moves = list(board.legal_moves)
-        if not legal_moves:
-            return []
-
-        self.model.eval()
-        with torch.no_grad():
-            tensor = encode_board(board).unsqueeze(0).to(self.device)
-            with self.model_lock:
-                _, logits = self.model(tensor)
-            logits = logits[0].detach().cpu()
-
-        ranked = sorted(
-            legal_moves,
-            key=lambda move: float(logits[move_to_policy_index(move)]),
-            reverse=True,
-        )
-        payload = []
-        for move in ranked[:limit]:
-            payload.append(
-                {
-                    "uci": move.uci(),
-                    "from": chess.square_name(move.from_square),
-                    "to": chess.square_name(move.to_square),
-                    "logit": float(logits[move_to_policy_index(move)]),
-                }
-            )
-        return payload
+        # Value-only model has no policy head; return empty
+        return []
 
     def evaluate_white(self, board: chess.Board) -> float:
         side_to_move_value = self.evaluate(board)
