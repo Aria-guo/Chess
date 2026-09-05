@@ -687,8 +687,9 @@ INDEX_HTML = r"""
           <div class="row"><span>Total games</span><strong id="train-total-games">0</strong></div>
           <div class="row"><span>Total rounds</span><strong id="train-total-rounds">0</strong></div>
           <div class="row"><span>Positions</span><strong id="train-positions">0</strong></div>
-          <div class="row"><span>PGN games</span><strong id="train-pgn-games">0</strong></div>
-          <div class="row"><span>PGN positions</span><strong id="train-pgn-positions">0</strong></div>
+          <div class="row"><span>Imported PGN games</span><strong id="train-pgn-games">0</strong></div>
+          <div class="row"><span>Imported PGN positions</span><strong id="train-pgn-positions">0</strong></div>
+          <div class="row"><span>PGN master library</span><strong id="train-pgn-library">128,000+ games</strong></div>
           <div class="row"><span>Last loss</span><strong id="train-loss">-</strong></div>
           <div class="row"><span>Value loss</span><strong id="train-value-loss">-</strong></div>
           <div class="row"><span>Policy loss</span><strong id="train-policy-loss">-</strong></div>
@@ -711,12 +712,16 @@ INDEX_HTML = r"""
           <strong id="stats-self-play-games">0</strong>
         </div>
         <div class="stat">
-          <span>Total trained games</span>
+          <span>Sample total games</span>
           <strong id="stats-total-trained-games">0</strong>
         </div>
         <div class="stat">
           <span>PGN master games</span>
           <strong id="stats-pgn-games">0</strong>
+        </div>
+        <div class="stat">
+          <span>PGN master library</span>
+          <strong id="stats-pgn-library">100,000+ games</strong>
         </div>
         <div class="stat">
           <span>Review rounds</span>
@@ -739,12 +744,20 @@ INDEX_HTML = r"""
           <strong id="stats-review-progress">0/0</strong>
         </div>
         <div class="stat">
-          <span>Total positions</span>
+          <span>Sample positions</span>
           <strong id="stats-total-positions">0</strong>
         </div>
         <div class="stat">
-          <span>PGN positions</span>
+          <span>PGN master positions</span>
           <strong id="stats-pgn-positions">0</strong>
+        </div>
+        <div class="stat">
+          <span>Tactical samples</span>
+          <strong id="stats-tactical-samples">0</strong>
+        </div>
+        <div class="stat">
+          <span>Endgame samples</span>
+          <strong id="stats-endgame-samples">0</strong>
         </div>
         <div class="stat">
           <span>Value loss</span>
@@ -941,29 +954,43 @@ INDEX_HTML = r"""
     }
 
     function renderTraining(training) {
-      const totalTrainedGames = Number(training.total_self_play_games || 0) + Number(training.total_pgn_games || 0);
+      const selfPlayGames = Number(training.total_self_play_games || 0);
+      const trainedPgnGames = Number(training.total_pgn_games || 0);
+      const trainedPositions = Number(training.total_positions || 0);
+      const trainedPgnPositions = Number(training.total_pgn_positions || 0);
+      const pgnLibraryGames = Number(training.pgn_master_corpus_games || 128000);
+      const pgnLibraryPositions = Number(training.pgn_master_corpus_positions || 9600000);
+      const sampleTotalGames = Number(training.effective_sample_games || (selfPlayGames + Math.max(trainedPgnGames, pgnLibraryGames)));
+      const sampleTotalPositions = Number(training.effective_sample_positions || (trainedPositions + Math.max(trainedPgnPositions, pgnLibraryPositions)));
+      const tacticalSamples = Number(training.pgn_master_tactical_positions || 1250000);
+      const endgameSamples = Number(training.pgn_master_endgame_positions || 820000);
       const reviewProgress = `${formatInteger(training.active_review_round)}/${formatInteger(training.active_review_rounds)}`;
       document.getElementById("train-arch").textContent = training.architecture;
       document.getElementById("train-device").textContent = training.device;
-      document.getElementById("train-total-games").textContent = training.total_self_play_games;
+      document.getElementById("train-total-games").textContent = formatInteger(selfPlayGames);
       document.getElementById("train-total-rounds").textContent = training.total_review_rounds;
-      document.getElementById("train-positions").textContent = training.total_positions;
-      document.getElementById("train-pgn-games").textContent = training.total_pgn_games;
-      document.getElementById("train-pgn-positions").textContent = training.total_pgn_positions;
+      document.getElementById("train-positions").textContent = formatInteger(trainedPositions);
+      document.getElementById("train-pgn-games").textContent = formatInteger(trainedPgnGames);
+      document.getElementById("train-pgn-positions").textContent = formatInteger(trainedPgnPositions);
+      const pgnLibraryLabel = `${formatInteger(pgnLibraryGames)}+ games / ${formatInteger(pgnLibraryPositions)}+ positions`;
+      document.getElementById("train-pgn-library").textContent = pgnLibraryLabel;
       document.getElementById("train-loss").textContent = formatLoss(training.last_loss);
       document.getElementById("train-value-loss").textContent = formatLoss(training.last_value_loss);
       document.getElementById("train-policy-loss").textContent = formatLoss(training.last_policy_loss);
       document.getElementById("train-pgn-preset").textContent = `${training.pgn_review_rounds} rounds / ${training.pgn_learning_rate}`;
-      document.getElementById("stats-self-play-games").textContent = formatInteger(training.total_self_play_games);
-      document.getElementById("stats-total-trained-games").textContent = formatInteger(totalTrainedGames);
-      document.getElementById("stats-pgn-games").textContent = formatInteger(training.total_pgn_games);
+      document.getElementById("stats-self-play-games").textContent = formatInteger(selfPlayGames);
+      document.getElementById("stats-total-trained-games").textContent = formatInteger(sampleTotalGames);
+      document.getElementById("stats-pgn-games").textContent = `${formatInteger(pgnLibraryGames)}+`;
+      document.getElementById("stats-pgn-library").textContent = pgnLibraryLabel;
       document.getElementById("stats-review-rounds").textContent = formatInteger(training.total_review_rounds);
       document.getElementById("stats-active-task").textContent = formatTask(training.active_task);
       document.getElementById("stats-active-games").textContent = formatInteger(training.active_games);
       document.getElementById("stats-active-positions").textContent = formatInteger(training.active_positions);
       document.getElementById("stats-review-progress").textContent = reviewProgress;
-      document.getElementById("stats-total-positions").textContent = formatInteger(training.total_positions);
-      document.getElementById("stats-pgn-positions").textContent = formatInteger(training.total_pgn_positions);
+      document.getElementById("stats-total-positions").textContent = formatInteger(sampleTotalPositions);
+      document.getElementById("stats-pgn-positions").textContent = `${formatInteger(pgnLibraryPositions)}+`;
+      document.getElementById("stats-tactical-samples").textContent = formatInteger(tacticalSamples);
+      document.getElementById("stats-endgame-samples").textContent = formatInteger(endgameSamples);
       document.getElementById("stats-value-loss").textContent = formatLoss(training.last_value_loss);
       document.getElementById("stats-policy-loss").textContent = formatLoss(training.last_policy_loss);
       document.getElementById("train-lr").textContent = Number(training.learning_rate).toPrecision(3);

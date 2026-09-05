@@ -125,9 +125,64 @@ PASSED_PAWN_BONUS_PER_RANK = 15
 
 # Tempo bonus
 TEMPO_BONUS = 15
+HANGING_MOVE_PENALTY_SCALE = 3
+MINOR_PIECES = {chess.KNIGHT, chess.BISHOP}
+RIM_KNIGHT_PENALTY = 55
+UNSAFE_MINOR_PAWN_CAPTURE_PENALTY = 140
+URGENT_THREAT_THRESHOLD = 120
+WING_PAWN_DISTRACTION_PENALTY = 280
+
+EVAL_WEIGHTS = {
+    "material": 1.00,
+    "pst": 0.85,
+    "pawn_structure": 0.90,
+    "pawn_chain": 0.55,
+    "backward_pawns": 0.75,
+    "space": 0.35,
+    "mobility": 0.35,
+    "rook_activity": 0.65,
+    "bishop_pair": 0.75,
+    "piece_coordination": 0.70,
+    "piece_protection": 0.60,
+    "piece_safety": 1.25,
+    "king_safety": 0.85,
+    "king_attack": 0.65,
+    "tactics": 0.80,
+    "capture_opportunity": 0.65,
+    "discovered": 0.35,
+    "tempo": 1.00,
+}
+
+EVAL_CAPS = {
+    "pst": 260,
+    "pawn_structure": 220,
+    "pawn_chain": 120,
+    "backward_pawns": 120,
+    "space": 180,
+    "mobility": 140,
+    "rook_activity": 90,
+    "bishop_pair": 40,
+    "piece_coordination": 220,
+    "piece_protection": 180,
+    "piece_safety": 900,
+    "king_safety": 320,
+    "king_attack": 260,
+    "tactics": 320,
+    "capture_opportunity": 360,
+    "discovered": 90,
+}
 
 # Files adjacent to the king's file for pawn shield
 _KING_FILE_OFFSETS = (-1, 0, 1)
+
+
+def _clamp(value: int, limit: int) -> int:
+    return max(-limit, min(limit, value))
+
+
+def _weighted_component(name: str, white_cp: int) -> int:
+    capped = _clamp(white_cp, EVAL_CAPS.get(name, 10_000))
+    return int(round(capped * EVAL_WEIGHTS.get(name, 1.0)))
 
 
 def _pst_value(piece_type: int, square: int, color: bool) -> int:
@@ -163,60 +218,59 @@ def _king_pst_value(square: int, color: bool, phase: float) -> int:
 def _pawn_structure_score(board: chess.Board) -> int:
     """Return pawn-structure score from White's perspective (centipawns)."""
     score = 0
-    white_pawns: list[int] = []
-    black_pawns: list[int] = []
+    pawns_by_color = {chess.WHITE: [], chess.BLACK: []}
     for square, piece in board.piece_map().items():
-        if piece.piece_type != chess.PAWN:
-            continue
-        if piece.color == chess.WHITE:
-            white_pawns.append(square)
-        else:
-            black_pawns.append(square)
+        if piece.piece_type == chess.PAWN:
+            pawns_by_color[piece.color].append(square)
 
-    # Doubled pawns penalty
-    for pawns, sign in [(white_pawns, 1), (black_pawns, -1)]:
+    for color in (chess.WHITE, chess.BLACK):
+        pawns = pawns_by_color[color]
+        enemy_pawns = pawns_by_color[not color]
+        sign = 1 if color == chess.WHITE else -1
+        direction = 1 if color == chess.WHITE else -1
         file_counts: dict[int, int] = {}
         for sq in pawns:
             f = chess.square_file(sq)
             file_counts[f] = file_counts.get(f, 0) + 1
-        for count in file_counts.values():
+
+        for f, count in file_counts.items():
             if count > 1:
                 score += sign * -15 * (count - 1)
+            if count:
+                front_rank = max(chess.square_rank(sq) for sq in pawns if chess.square_file(sq) == f)
+                if color == chess.BLACK:
+                    front_rank = min(chess.square_rank(sq) for sq in pawns if chess.square_file(sq) == f)
+                front_sq = chess.square(f, front_rank + direction) if 0 <= front_rank + direction <= 7 else None
+                if front_sq is not None and board.piece_at(front_sq) is not None:
+                    score += sign * -8
 
-    # Isolated pawn penalty
-    for pawns, sign in [(white_pawns, 1), (black_pawns, -1)]:
         occupied_files = {chess.square_file(sq) for sq in pawns}
         for sq in pawns:
             f = chess.square_file(sq)
+            rank = chess.square_rank(sq)
             if (f - 1) not in occupied_files and (f + 1) not in occupied_files:
                 score += sign * -12
 
-    # Passed pawns
-    for sq in white_pawns:
-        rank = chess.square_rank(sq)
-        f = chess.square_file(sq)
-        blocked = False
-        for b_sq in black_pawns:
-            bf = chess.square_file(b_sq)
-            br = chess.square_rank(b_sq)
-            if abs(bf - f) <= 1 and br > rank:
-                blocked = True
-                break
-        if not blocked:
-            score += PASSED_PAWN_BONUS_PER_RANK * (rank - 1)
-
-    for sq in black_pawns:
-        rank = chess.square_rank(sq)
-        f = chess.square_file(sq)
-        blocked = False
-        for w_sq in white_pawns:
-            wf = chess.square_file(w_sq)
-            wr = chess.square_rank(w_sq)
-            if abs(wf - f) <= 1 and wr < rank:
-                blocked = True
-                break
-        if not blocked:
-            score -= PASSED_PAWN_BONUS_PER_RANK * (6 - rank)
+            blockers = [
+                enemy_sq
+                for enemy_sq in enemy_pawns
+                if abs(chess.square_file(enemy_sq) - f) <= 1
+                and ((chess.square_rank(enemy_sq) > rank) if color == chess.WHITE else (chess.square_rank(enemy_sq) < rank))
+            ]
+            advanced = rank - 1 if color == chess.WHITE else 6 - rank
+            if not blockers:
+                bonus = PASSED_PAWN_BONUS_PER_RANK * max(0, advanced)
+                if board.attackers(color, sq):
+                    bonus += 8
+                if rank in (5, 6) if color == chess.WHITE else rank in (1, 2):
+                    bonus += 18
+                score += sign * bonus
+            else:
+                front_rank = rank + direction
+                if 0 <= front_rank <= 7:
+                    front_sq = chess.square(f, front_rank)
+                    if not board.is_attacked_by(not color, front_sq):
+                        score += sign * max(0, advanced) * 3
 
     return score
 
@@ -228,6 +282,16 @@ def _pawn_structure_score(board: chess.Board) -> int:
 def _king_safety_score(board: chess.Board) -> int:
     """Return king-safety score from White's perspective."""
     score = 0
+    phase = _phase(board)
+    attack_weight = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 8,
+        chess.KING: 0,
+    }
+
     for color in (chess.WHITE, chess.BLACK):
         sign = 1 if color == chess.WHITE else -1
         king_sq = board.king(color)
@@ -235,8 +299,24 @@ def _king_safety_score(board: chess.Board) -> int:
             continue
         king_file = chess.square_file(king_sq)
         king_rank = chess.square_rank(king_sq)
+        local = 0
 
-        # Pawn shield: friendly pawns on adjacent files in front of king
+        if phase > 0.25:
+            is_center_file = king_file in (3, 4, 5)
+            is_center_rank = (color == chess.WHITE and king_rank <= 2) or (color == chess.BLACK and king_rank >= 5)
+            if is_center_file and is_center_rank:
+                local -= int(85 * phase)
+            elif is_center_file or is_center_rank:
+                local -= int(35 * phase)
+
+            home_rank = 0 if color == chess.WHITE else 7
+            if king_rank == home_rank and king_file in (3, 4, 5):
+                if not board.has_kingside_castling_rights(color) and not board.has_queenside_castling_rights(color):
+                    local -= int(45 * phase)
+
+        if king_file in (2, 6):
+            local += int(38 * phase)
+
         shield_bonus = 0
         for df in _KING_FILE_OFFSETS:
             f = king_file + df
@@ -250,10 +330,9 @@ def _king_safety_score(board: chess.Board) -> int:
                 sq = chess.square(f, r)
                 piece = board.piece_at(sq)
                 if piece is not None and piece.piece_type == chess.PAWN and piece.color == color:
-                    shield_bonus += 8
-        score += sign * shield_bonus
+                    shield_bonus += 9 if dr == 1 else 5
+        local += int(shield_bonus * phase)
 
-        # Pawn storm penalty: enemy pawns attacking near the king
         attack_penalty = 0
         for df in _KING_FILE_OFFSETS:
             f = king_file + df
@@ -266,10 +345,9 @@ def _king_safety_score(board: chess.Board) -> int:
                 sq = chess.square(f, r)
                 piece = board.piece_at(sq)
                 if piece is not None and piece.piece_type == chess.PAWN and piece.color != color:
-                    attack_penalty += 6
-        score -= sign * attack_penalty
+                    attack_penalty += 9 if dr == 1 else 5
+        local -= int(attack_penalty * phase)
 
-        # Open files near king are dangerous
         for df in _KING_FILE_OFFSETS:
             f = king_file + df
             if f < 0 or f > 7:
@@ -285,7 +363,31 @@ def _king_safety_score(board: chess.Board) -> int:
                     else:
                         has_enemy_pawn = True
             if not has_own_pawn:
-                score -= sign * (ROOK_SEMI_OPEN_FILE_BONUS if has_enemy_pawn else 8)
+                local -= int((18 if has_enemy_pawn else 28) * phase)
+
+        king_zone = []
+        for df in (-2, -1, 0, 1, 2):
+            for dr in (-2, -1, 0, 1, 2):
+                f = king_file + df
+                r = king_rank + dr
+                if 0 <= f <= 7 and 0 <= r <= 7:
+                    king_zone.append(chess.square(f, r))
+
+        attacker_units = 0
+        weak_squares = 0
+        for sq in king_zone:
+            if board.is_attacked_by(not color, sq):
+                attackers = board.attackers(not color, sq)
+                for attacker_sq in attackers:
+                    attacker = board.piece_at(attacker_sq)
+                    if attacker is not None:
+                        attacker_units += attack_weight[attacker.piece_type]
+            if sq != king_sq and not board.is_attacked_by(color, sq):
+                weak_squares += 1
+
+        local -= int(min(130, attacker_units * 3) * (0.45 + 0.55 * phase))
+        local -= int(min(60, weak_squares * 3) * phase)
+        score += sign * local
 
     return score
 
@@ -346,6 +448,659 @@ def _bishop_pair_bonus(board: chess.Board) -> int:
     return score
 
 
+def _cheapest_attacker_value(board: chess.Board, color: bool, square: int) -> int | None:
+    values = [
+        PIECE_VALUES[piece.piece_type]
+        for attacker_sq in board.attackers(color, square)
+        if (piece := board.piece_at(attacker_sq)) is not None
+    ]
+    return min(values) if values else None
+
+
+def _cheapest_defender_value(board: chess.Board, color: bool, square: int) -> int | None:
+    values = [
+        PIECE_VALUES[piece.piece_type]
+        for defender_sq in board.attackers(color, square)
+        if defender_sq != square and (piece := board.piece_at(defender_sq)) is not None
+    ]
+    return min(values) if values else None
+
+
+def _defender_values(board: chess.Board, color: bool, square: int) -> list[int]:
+    return [
+        PIECE_VALUES[piece.piece_type]
+        for defender_sq in board.attackers(color, square)
+        if defender_sq != square and (piece := board.piece_at(defender_sq)) is not None
+    ]
+
+
+def _captured_piece_for_move(board: chess.Board, move: chess.Move) -> chess.Piece | None:
+    if board.is_en_passant(move):
+        return chess.Piece(chess.PAWN, not board.turn)
+    return board.piece_at(move.to_square)
+
+
+def _is_immediate_checkmate(board: chess.Board, move: chess.Move) -> bool:
+    board.push(move)
+    try:
+        return board.is_checkmate()
+    finally:
+        board.pop()
+
+
+def _piece_threat_penalty(board: chess.Board, square: int, piece: chess.Piece) -> int:
+    if piece.piece_type == chess.KING:
+        return 0
+
+    value = PIECE_VALUES[piece.piece_type]
+    attackers = [
+        PIECE_VALUES[attacker.piece_type]
+        for attacker_sq in board.attackers(not piece.color, square)
+        if (attacker := board.piece_at(attacker_sq)) is not None
+    ]
+    if not attackers:
+        return 0
+
+    defenders = _defender_values(board, piece.color, square)
+    cheapest_attacker = min(attackers)
+    cheapest_defender = min(defenders) if defenders else None
+    penalty = 0
+
+    if cheapest_defender is None:
+        penalty += min(value, max(value // 2, value - cheapest_attacker // 2))
+    elif cheapest_attacker < value:
+        penalty += max(0, value - cheapest_attacker - cheapest_defender // 3)
+
+    if len(attackers) > len(defenders):
+        penalty += min(90, (len(attackers) - len(defenders)) * 30)
+
+    if piece.piece_type in MINOR_PIECES and cheapest_attacker <= PIECE_VALUES[chess.PAWN]:
+        penalty = max(penalty, value - 25)
+
+    if piece.piece_type in (chess.ROOK, chess.QUEEN) and cheapest_attacker <= PIECE_VALUES[chess.BISHOP]:
+        penalty = max(penalty + 70, value - cheapest_attacker // 2)
+
+    return min(value, penalty)
+
+
+def _side_threat_penalty(board: chess.Board, color: bool) -> int:
+    return sum(
+        _piece_threat_penalty(board, square, piece)
+        for square, piece in board.piece_map().items()
+        if piece.color == color and piece.piece_type != chess.KING
+    )
+
+
+def _capture_gain(board: chess.Board, move: chess.Move) -> int:
+    moving_piece = board.piece_at(move.from_square)
+    captured_piece = _captured_piece_for_move(board, move)
+    if moving_piece is None or captured_piece is None:
+        return 0
+
+    captured_value = PIECE_VALUES[captured_piece.piece_type]
+    board.push(move)
+    try:
+        moved_piece = board.piece_at(move.to_square)
+        if moved_piece is None:
+            return captured_value
+        return captured_value - _piece_threat_penalty(board, move.to_square, moved_piece)
+    finally:
+        board.pop()
+
+
+def _move_safety_swing(board: chess.Board, move: chess.Move, color: bool | None = None) -> int:
+    color = board.turn if color is None else color
+    before = _side_threat_penalty(board, color)
+    board.push(move)
+    try:
+        after = _side_threat_penalty(board, color)
+    finally:
+        board.pop()
+    return before - after
+
+
+def _is_quiet_wing_pawn_push(board: chess.Board, move: chess.Move) -> bool:
+    moving_piece = board.piece_at(move.from_square)
+    return (
+        moving_piece is not None
+        and moving_piece.piece_type == chess.PAWN
+        and chess.square_file(move.from_square) in (0, 7)
+        and not board.is_capture(move)
+        and not move.promotion
+    )
+
+
+def _urgent_safety_move_score(board: chess.Board, move: chess.Move) -> int:
+    own_threat = _side_threat_penalty(board, board.turn)
+    if own_threat < URGENT_THREAT_THRESHOLD:
+        return -45 if _is_quiet_wing_pawn_push(board, move) and board.fullmove_number <= 16 else 0
+
+    swing = _move_safety_swing(board, move, board.turn)
+    score = 4 * swing
+
+    if swing <= 0 and not board.is_capture(move) and not move.promotion:
+        score -= min(1600, 3 * own_threat)
+        if _is_quiet_wing_pawn_push(board, move):
+            score -= WING_PAWN_DISTRACTION_PENALTY
+    elif swing < own_threat // 3 and _is_quiet_wing_pawn_push(board, move):
+        score -= WING_PAWN_DISTRACTION_PENALTY
+
+    return score
+
+
+def _move_tactical_bonus(board: chess.Board, move: chess.Move) -> int:
+    """Return a bounded bonus for moves that create immediate tactical threats."""
+    moving_piece = board.piece_at(move.from_square)
+    if moving_piece is None:
+        return 0
+
+    board.push(move)
+    try:
+        moved_piece = board.piece_at(move.to_square)
+        if moved_piece is None or moved_piece.piece_type == chess.KING:
+            return 0
+
+        attacked_values = []
+        for target_sq in board.attacks(move.to_square):
+            target = board.piece_at(target_sq)
+            if target is None or target.color == moved_piece.color:
+                continue
+            if target.piece_type == chess.KING:
+                attacked_values.append(1000)
+            elif PIECE_VALUES[target.piece_type] >= PIECE_VALUES[moved_piece.piece_type] - 100:
+                attacked_values.append(PIECE_VALUES[target.piece_type])
+
+        if len(attacked_values) < 2:
+            return 0
+
+        attacked_values.sort(reverse=True)
+        fork_bonus = min(380, (attacked_values[0] + attacked_values[1]) // 3)
+        if moved_piece.piece_type == chess.KNIGHT:
+            fork_bonus = int(fork_bonus * 1.25)
+        elif moved_piece.piece_type == chess.PAWN:
+            fork_bonus = int(fork_bonus * 1.35)
+
+        if board.is_check() and attacked_values[1] >= PIECE_VALUES[chess.ROOK]:
+            fork_bonus += 160
+
+        return min(620, fork_bonus)
+    finally:
+        board.pop()
+
+
+def _move_hanging_penalty(board: chess.Board, move: chess.Move) -> int:
+    """Return an ordering penalty for moves that leave the moved piece loose."""
+    moving_piece = board.piece_at(move.from_square)
+    if moving_piece is None or moving_piece.piece_type == chess.KING:
+        return 0
+
+    captured_piece = _captured_piece_for_move(board, move)
+    captured_value = PIECE_VALUES[captured_piece.piece_type] if captured_piece is not None else 0
+    is_minor_pawn_capture = moving_piece.piece_type in MINOR_PIECES and captured_value == PIECE_VALUES[chess.PAWN]
+
+    board.push(move)
+    try:
+        moved_piece = board.piece_at(move.to_square)
+        if moved_piece is None or board.is_checkmate():
+            return 0
+
+        moved_value = PIECE_VALUES[moved_piece.piece_type]
+        mover_color = moved_piece.color
+        enemy_color = not mover_color
+        cheapest_attacker = _cheapest_attacker_value(board, enemy_color, move.to_square)
+        penalty = 0
+
+        if moved_piece.piece_type == chess.KNIGHT and chess.square_file(move.to_square) in (0, 7):
+            penalty += RIM_KNIGHT_PENALTY
+
+        if cheapest_attacker is None:
+            return penalty
+
+        cheapest_defender = _cheapest_defender_value(board, mover_color, move.to_square)
+        exchange_loss = max(0, moved_value - captured_value)
+        if exchange_loss == 0:
+            return penalty
+
+        if cheapest_defender is None:
+            penalty += exchange_loss
+        else:
+            trade_loss = max(0, moved_value - captured_value - cheapest_attacker)
+            if cheapest_attacker < moved_value:
+                penalty += max(trade_loss, exchange_loss // 3)
+            else:
+                penalty += max(0, trade_loss // 2)
+
+        if is_minor_pawn_capture and cheapest_attacker <= PIECE_VALUES[chess.PAWN]:
+            penalty += UNSAFE_MINOR_PAWN_CAPTURE_PENALTY
+
+        return penalty
+    finally:
+        board.pop()
+
+
+def _piece_safety_score(board: chess.Board) -> int:
+    """Evaluate loose or tactically vulnerable pieces from White's perspective."""
+    score = 0
+    phase = _phase(board)
+    for square, piece in board.piece_map().items():
+        if piece.piece_type == chess.KING:
+            continue
+
+        sign = 1 if piece.color == chess.WHITE else -1
+        penalty = _piece_threat_penalty(board, square, piece)
+
+        if piece.piece_type == chess.KNIGHT and chess.square_file(square) in (0, 7):
+            penalty += int(RIM_KNIGHT_PENALTY * phase)
+
+        score -= sign * penalty
+
+    return score
+
+
+def _piece_protection_score(board: chess.Board) -> int:
+    """Reward pieces that are mutually protected and penalize loose pieces."""
+    score = 0
+    phase = _phase(board)
+    loose_penalty = {
+        chess.PAWN: 2,
+        chess.KNIGHT: 16,
+        chess.BISHOP: 16,
+        chess.ROOK: 22,
+        chess.QUEEN: 32,
+    }
+
+    for square, piece in board.piece_map().items():
+        if piece.piece_type == chess.KING:
+            continue
+
+        sign = 1 if piece.color == chess.WHITE else -1
+        defenders = _defender_values(board, piece.color, square)
+        attackers = _defender_values(board, not piece.color, square)
+        pawn_defended = any(
+            (defender := board.piece_at(defender_sq)) is not None and defender.piece_type == chess.PAWN
+            for defender_sq in board.attackers(piece.color, square)
+            if defender_sq != square
+        )
+
+        if defenders:
+            bonus = min(24, len(defenders) * 6)
+            if pawn_defended:
+                bonus += 8
+            if attackers and min(defenders) <= min(attackers):
+                bonus += 6
+            if piece.piece_type in MINOR_PIECES and chess.square_file(square) not in (0, 7):
+                bonus += int(5 * phase)
+            score += sign * bonus
+        else:
+            penalty = loose_penalty.get(piece.piece_type, 0)
+            if piece.piece_type in MINOR_PIECES and chess.square_file(square) in (2, 3, 4, 5):
+                penalty += 8
+            score -= sign * penalty
+
+    return score
+
+
+def _capture_opportunity_score(board: chess.Board) -> int:
+    """Reward the side to move for immediate favorable captures."""
+    gains = [
+        _capture_gain(board, move)
+        for move in list(board.legal_moves)
+        if board.is_capture(move)
+    ]
+    best_gain = max(gains, default=0)
+    if best_gain <= 0:
+        return 0
+
+    sign = 1 if board.turn == chess.WHITE else -1
+    return sign * min(360, best_gain)
+
+
+def _space_advantage(board: chess.Board) -> int:
+    """Evaluate space advantage based on controlled squares and advanced pawns.
+
+    Returns score from White's perspective.
+    """
+    score = 0
+    phase = _phase(board)
+
+    for color in (chess.WHITE, chess.BLACK):
+        sign = 1 if color == chess.WHITE else -1
+        controlled_space = 0
+
+        for sq in chess.SQUARES:
+            rank = chess.square_rank(sq)
+            file_idx = chess.square_file(sq)
+            is_enemy_half = rank >= 4 if color == chess.WHITE else rank <= 3
+            is_center_band = 2 <= file_idx <= 5
+            occupant = board.piece_at(sq)
+
+            if occupant is not None and occupant.color == color:
+                continue
+            if is_enemy_half and is_center_band and board.is_attacked_by(color, sq):
+                if not board.is_attacked_by(not color, sq):
+                    controlled_space += 2
+                else:
+                    controlled_space += 1
+
+        score += sign * int(controlled_space * (0.45 + 0.55 * phase))
+
+    for square, piece in board.piece_map().items():
+        if piece.piece_type != chess.PAWN:
+            continue
+
+        rank = chess.square_rank(square)
+        sign = 1 if piece.color == chess.WHITE else -1
+
+        if piece.color == chess.WHITE and rank >= 4:
+            score += sign * int((rank - 3) * 6 * (0.6 + phase))
+        elif piece.color == chess.BLACK and rank <= 3:
+            score += sign * int((4 - rank) * 6 * (0.6 + phase))
+
+    return score
+
+
+def _piece_coordination(board: chess.Board) -> int:
+    """Evaluate piece coordination: knight outposts, rook on 7th rank, bishop activity.
+
+    Returns score from White's perspective.
+    """
+    score = 0
+    phase = _phase(board)
+
+    for square, piece in board.piece_map().items():
+        sign = 1 if piece.color == chess.WHITE else -1
+        file_idx = chess.square_file(square)
+        rank = chess.square_rank(square)
+
+        if piece.piece_type == chess.KNIGHT:
+            if file_idx in (0, 7):
+                score -= sign * int(45 * phase)
+            if file_idx in (2, 3, 4, 5) and rank not in (0, 7):
+                score += sign * int(12 * phase)
+
+            own_pawn_defended = any(
+                (attacker := board.piece_at(attacker_sq)) is not None and attacker.piece_type == chess.PAWN
+                for attacker_sq in board.attackers(piece.color, square)
+            )
+            enemy_pawn_attack = any(
+                (attacker := board.piece_at(attacker_sq)) is not None and attacker.piece_type == chess.PAWN
+                for attacker_sq in board.attackers(not piece.color, square)
+            )
+            is_advanced = rank >= 4 if piece.color == chess.WHITE else rank <= 3
+            if is_advanced and own_pawn_defended and not enemy_pawn_attack:
+                score += sign * 34
+
+        if piece.piece_type == chess.ROOK:
+            if piece.color == chess.WHITE and rank == 6:  # 7th rank for white
+                score += sign * 25
+            elif piece.color == chess.BLACK and rank == 1:  # 2nd rank for black
+                score += sign * 25
+
+        if piece.piece_type == chess.BISHOP:
+            if file_idx == rank or file_idx == 7 - rank:
+                score += sign * 10
+            if file_idx in (0, 7) or rank in (0, 7):
+                score -= sign * int(8 * phase)
+
+        if piece.piece_type == chess.QUEEN:
+            if 2 <= file_idx <= 5 and 2 <= rank <= 5:
+                score += sign * 15
+
+    for color in (chess.WHITE, chess.BLACK):
+        sign = 1 if color == chess.WHITE else -1
+        rooks = list(board.pieces(chess.ROOK, color))
+        if len(rooks) >= 2:
+            files = [chess.square_file(sq) for sq in rooks]
+            ranks = [chess.square_rank(sq) for sq in rooks]
+            if len(set(files)) < len(files) or len(set(ranks)) < len(ranks):
+                score += sign * 14
+
+    return score
+
+
+def _pawn_chain_strength(board: chess.Board) -> int:
+    """Evaluate pawn chains and pawn islands.
+
+    Returns score from White's perspective.
+    """
+    score = 0
+
+    for color in (chess.WHITE, chess.BLACK):
+        sign = 1 if color == chess.WHITE else -1
+        pawns = [sq for sq, p in board.piece_map().items()
+                 if p.piece_type == chess.PAWN and p.color == color]
+
+        # Group pawns by file
+        files_with_pawns = {}
+        for sq in pawns:
+            f = chess.square_file(sq)
+            if f not in files_with_pawns:
+                files_with_pawns[f] = []
+            files_with_pawns[f].append(sq)
+
+        # Pawn chains: connected pawns protecting each other
+        chain_bonus = 0
+        for f in sorted(files_with_pawns.keys()):
+            # Check if this pawn is protected by a pawn on adjacent file
+            for pawn_sq in files_with_pawns[f]:
+                rank = chess.square_rank(pawn_sq)
+                # Look for protecting pawns on adjacent files
+                for df in [-1, 1]:
+                    adj_file = f + df
+                    if adj_file in files_with_pawns:
+                        for adj_pawn in files_with_pawns[adj_file]:
+                            adj_rank = chess.square_rank(adj_pawn)
+                            # Pawn is protected if adjacent pawn is one rank behind
+                            if color == chess.WHITE and adj_rank == rank - 1:
+                                chain_bonus += 5
+                            elif color == chess.BLACK and adj_rank == rank + 1:
+                                chain_bonus += 5
+
+        score += sign * chain_bonus
+
+        # Pawn islands: fewer islands is better
+        # An island is a group of pawns on consecutive files
+        sorted_files = sorted(files_with_pawns.keys())
+        islands = 1
+        for i in range(1, len(sorted_files)):
+            if sorted_files[i] - sorted_files[i-1] > 1:
+                islands += 1
+
+        # Penalty for each island (fewer islands = better coordination)
+        score -= sign * (islands - 1) * 10
+
+    return score
+
+
+def _backward_pawns(board: chess.Board) -> int:
+    """Detect backward pawns (pawns that can't advance safely).
+
+    Returns score from White's perspective.
+    """
+    score = 0
+
+    for color in (chess.WHITE, chess.BLACK):
+        sign = 1 if color == chess.WHITE else -1
+        pawns = [sq for sq, p in board.piece_map().items()
+                 if p.piece_type == chess.PAWN and p.color == color]
+
+        for pawn_sq in pawns:
+            file_idx = chess.square_file(pawn_sq)
+            rank = chess.square_rank(pawn_sq)
+
+            # Check if pawn is backward
+            is_backward = False
+
+            # Check adjacent files for friendly pawns
+            has_adjacent_pawn = False
+            for df in [-1, 1]:
+                adj_file = file_idx + df
+                if 0 <= adj_file <= 7:
+                    for adj_sq in pawns:
+                        if chess.square_file(adj_sq) == adj_file:
+                            adj_rank = chess.square_rank(adj_sq)
+                            # Adjacent pawn is ahead or on same rank
+                            if color == chess.WHITE and adj_rank >= rank:
+                                has_adjacent_pawn = True
+                            elif color == chess.BLACK and adj_rank <= rank:
+                                has_adjacent_pawn = True
+
+            if not has_adjacent_pawn:
+                # Check if the square in front is controlled by enemy
+                forward_rank = rank + 1 if color == chess.WHITE else rank - 1
+                if 0 <= forward_rank <= 7:
+                    forward_sq = chess.square(file_idx, forward_rank)
+                    enemy_color = not color
+                    if board.is_attacked_by(enemy_color, forward_sq):
+                        is_backward = True
+
+            if is_backward:
+                score -= sign * 15
+
+    return score
+
+
+def _king_attack_weakness(board: chess.Board) -> int:
+    """Evaluate direct pressure near kings from White's perspective."""
+    score = 0
+    weights = {
+        chess.PAWN: 4,
+        chess.KNIGHT: 14,
+        chess.BISHOP: 12,
+        chess.ROOK: 18,
+        chess.QUEEN: 26,
+        chess.KING: 0,
+    }
+
+    for color in (chess.WHITE, chess.BLACK):
+        sign = 1 if color == chess.WHITE else -1
+        king_sq = board.king(color)
+        if king_sq is None:
+            continue
+
+        king_file = chess.square_file(king_sq)
+        king_rank = chess.square_rank(king_sq)
+
+        pressure = 0
+        used_attackers: set[int] = set()
+        for df in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                f = king_file + df
+                r = king_rank + dr
+                if 0 <= f <= 7 and 0 <= r <= 7:
+                    sq = chess.square(f, r)
+                    for attacker_sq in board.attackers(not color, sq):
+                        if attacker_sq in used_attackers:
+                            continue
+                        attacker = board.piece_at(attacker_sq)
+                        if attacker is None:
+                            continue
+                        used_attackers.add(attacker_sq)
+                        pressure += weights[attacker.piece_type]
+
+        score -= sign * pressure
+
+    return score
+
+
+def _hanging_pieces(board: chess.Board) -> int:
+    """Detect attacked and undefended pieces from White's perspective."""
+    score = 0
+
+    for square, piece in board.piece_map().items():
+        if piece.piece_type == chess.KING:
+            continue
+
+        sign = 1 if piece.color == chess.WHITE else -1
+        enemy_color = not piece.color
+
+        if board.is_attacked_by(enemy_color, square):
+            defenders = _defender_values(board, piece.color, square)
+            if not defenders:
+                score -= sign * min(180, max(35, PIECE_VALUES[piece.piece_type] // 2))
+
+    return score
+
+
+_ORTHOGONAL_DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+_DIAGONAL_DIRECTIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+
+
+def _slider_directions(piece_type: int) -> tuple[tuple[int, int], ...]:
+    if piece_type == chess.BISHOP:
+        return _DIAGONAL_DIRECTIONS
+    if piece_type == chess.ROOK:
+        return _ORTHOGONAL_DIRECTIONS
+    if piece_type == chess.QUEEN:
+        return _ORTHOGONAL_DIRECTIONS + _DIAGONAL_DIRECTIONS
+    return ()
+
+
+def _ray_squares(square: int, df: int, dr: int) -> list[int]:
+    file_idx = chess.square_file(square) + df
+    rank = chess.square_rank(square) + dr
+    squares = []
+    while 0 <= file_idx <= 7 and 0 <= rank <= 7:
+        squares.append(chess.square(file_idx, rank))
+        file_idx += df
+        rank += dr
+    return squares
+
+
+def _discovered_attacks(board: chess.Board) -> int:
+    """Detect simple discovered attack potential from White's perspective."""
+    score = 0
+
+    for square, piece in board.piece_map().items():
+        if piece.piece_type not in (chess.BISHOP, chess.ROOK, chess.QUEEN):
+            continue
+
+        sign = 1 if piece.color == chess.WHITE else -1
+        for df, dr in _slider_directions(piece.piece_type):
+            blocker = None
+            for target_sq in _ray_squares(square, df, dr):
+                target = board.piece_at(target_sq)
+                if target is None:
+                    continue
+                if blocker is None:
+                    if target.color != piece.color or target.piece_type == chess.KING:
+                        break
+                    blocker = target
+                    continue
+                if target.color != piece.color and PIECE_VALUES[target.piece_type] >= PIECE_VALUES[chess.BISHOP]:
+                    score += sign * min(45, 12 + PIECE_VALUES[target.piece_type] // 20)
+                break
+
+    return score
+
+
+def _skewer_score(board: chess.Board) -> int:
+    """Detect simple line skewers from White's perspective."""
+    score = 0
+    for square, piece in board.piece_map().items():
+        if piece.piece_type not in (chess.BISHOP, chess.ROOK, chess.QUEEN):
+            continue
+
+        sign = 1 if piece.color == chess.WHITE else -1
+        for df, dr in _slider_directions(piece.piece_type):
+            first_enemy = None
+            for target_sq in _ray_squares(square, df, dr):
+                target = board.piece_at(target_sq)
+                if target is None:
+                    continue
+                if target.color == piece.color:
+                    break
+                if first_enemy is None:
+                    first_enemy = target
+                    continue
+                first_value = 10_000 if first_enemy.piece_type == chess.KING else PIECE_VALUES[first_enemy.piece_type]
+                second_value = PIECE_VALUES[target.piece_type]
+                if first_value >= PIECE_VALUES[chess.ROOK] and second_value >= PIECE_VALUES[chess.BISHOP]:
+                    score += sign * min(90, 25 + second_value // 12)
+                break
+    return score
+
+
 # ---------------------------------------------------------------------------
 # Tactical pattern detection
 # ---------------------------------------------------------------------------
@@ -358,6 +1113,8 @@ def _fork_score(board: chess.Board) -> int:
     score = 0
     for square, piece in board.piece_map().items():
         if piece.piece_type == chess.KING:
+            continue
+        if board.is_pinned(piece.color, square):
             continue
         # Get all squares this piece attacks
         attacks = board.attacks(square)
@@ -389,38 +1146,26 @@ def _fork_score(board: chess.Board) -> int:
 
 
 def _pin_score(board: chess.Board) -> int:
-    """Detect pins: a piece blocking an attack on a more valuable piece.
-
-    Rewards the side that IS pinning.  Returns score from White's perspective.
-    """
+    """Detect absolute pins and reward the pinning side."""
     score = 0
     for pinned_color in (chess.WHITE, chess.BLACK):
-        king_sq = board.king(pinned_color)
-        if king_sq is None:
-            continue
-
         for square, piece in board.piece_map().items():
             if piece.color != pinned_color:
                 continue
             if piece.piece_type == chess.KING:
                 continue
 
-            for enemy_sq, enemy_piece in board.piece_map().items():
-                if enemy_piece.color == pinned_color:
-                    continue
-                if enemy_piece.piece_type not in (chess.BISHOP, chess.ROOK, chess.QUEEN):
-                    continue
-
-                if _is_pinned_to(board, square, king_sq, enemy_sq, enemy_piece):
-                    # Reward the PINNING side (opposite of pinned color)
-                    pinner_sign = -1 if pinned_color == chess.WHITE else 1
-                    pinned_value = PIECE_VALUES[piece.piece_type]
-                    bonus = 40
-                    if pinned_value >= 900:
-                        bonus += 60
-                    elif pinned_value >= 500:
-                        bonus += 30
-                    score += pinner_sign * bonus
+            if board.is_pinned(pinned_color, square):
+                pinner_sign = -1 if pinned_color == chess.WHITE else 1
+                pinned_value = PIECE_VALUES[piece.piece_type]
+                bonus = 35
+                if pinned_value >= PIECE_VALUES[chess.QUEEN]:
+                    bonus += 60
+                elif pinned_value >= PIECE_VALUES[chess.ROOK]:
+                    bonus += 30
+                elif pinned_value >= PIECE_VALUES[chess.BISHOP]:
+                    bonus += 15
+                score += pinner_sign * bonus
 
     return score
 
@@ -497,47 +1242,50 @@ def _phase(board: chess.Board) -> float:
 def evaluate_position(board: chess.Board, color: bool) -> int:
     """Comprehensive evaluation from *color*'s perspective (centipawns)."""
     if board.is_checkmate():
-        return -1_000_000
+        return -1_000_000 if board.turn == color else 1_000_000
     if board.is_stalemate() or board.is_insufficient_material():
         return 0
 
     phase = _phase(board)
-    material = 0
-    pst = 0
+    material_white = 0
+    pst_white = 0
 
     for square, piece in board.piece_map().items():
-        sign = 1 if piece.color == color else -1
-        material += sign * PIECE_VALUES[piece.piece_type]
-        pst += sign * _pst_value(piece.piece_type, square, piece.color)
+        sign = 1 if piece.color == chess.WHITE else -1
+        material_white += sign * PIECE_VALUES[piece.piece_type]
+        pst_white += sign * _pst_value(piece.piece_type, square, piece.color)
         if piece.piece_type == chess.KING:
-            pst += sign * _king_pst_value(square, piece.color, phase)
+            pst_white += sign * _king_pst_value(square, piece.color, phase)
 
-    pawn_struct = _pawn_structure_score(board)
-    king_safety = _king_safety_score(board)
-    mobility = _mobility_score(board)
-    rook_act = _rook_activity(board)
-    bishop_pair = _bishop_pair_bonus(board)
-    tactics = _fork_score(board) + _pin_score(board)
+    tactics = _fork_score(board) + _pin_score(board) + _skewer_score(board)
+    piece_safety = _piece_safety_score(board) + _hanging_pieces(board)
+    components = {
+        "pst": pst_white,
+        "pawn_structure": _pawn_structure_score(board),
+        "pawn_chain": _pawn_chain_strength(board),
+        "backward_pawns": _backward_pawns(board),
+        "space": _space_advantage(board),
+        "mobility": _mobility_score(board),
+        "rook_activity": _rook_activity(board),
+        "bishop_pair": _bishop_pair_bonus(board),
+        "piece_coordination": _piece_coordination(board),
+        "piece_protection": _piece_protection_score(board),
+        "piece_safety": piece_safety,
+        "king_safety": _king_safety_score(board),
+        "king_attack": _king_attack_weakness(board),
+        "tactics": tactics,
+        "capture_opportunity": _capture_opportunity_score(board),
+        "discovered": _discovered_attacks(board),
+    }
 
-    # Sign-adjust for the side we're evaluating
-    sign_color = 1 if color == chess.WHITE else -1
+    white_total = int(round(material_white * EVAL_WEIGHTS["material"]))
+    for name, value in components.items():
+        white_total += _weighted_component(name, value)
 
-    total = (
-        material
-        + pst
-        + sign_color * pawn_struct
-        + sign_color * king_safety
-        + mobility
-        + sign_color * rook_act
-        + sign_color * bishop_pair
-        + sign_color * tactics
-    )
+    tempo_white = TEMPO_BONUS if board.turn == chess.WHITE else -TEMPO_BONUS
+    white_total += int(round(tempo_white * EVAL_WEIGHTS["tempo"]))
 
-    # Tempo
-    if board.turn == color:
-        total += TEMPO_BONUS
-
-    return total
+    return white_total if color == chess.WHITE else -white_total
 
 
 def evaluate_white_cp(board: chess.Board) -> int:
@@ -605,6 +1353,9 @@ class BasicAI(RandomAI):
         best_score = -1_000_000_000
 
         ordered = self.order_moves(board, legal_moves)
+        for move in ordered:
+            if _is_immediate_checkmate(board, move):
+                return move
 
         for idx, move in enumerate(ordered):
             board.push(move)
@@ -653,19 +1404,25 @@ class BasicAI(RandomAI):
         if (
             not in_check
             and depth >= 3
-            and static_eval >= beta
             and self._has_pieces(board, board.turn)
         ):
             reduction = 3 + depth // 6
-            board.push(chess.Move.null())
-            try:
-                null_score = -self.search(
-                    board, depth - 1 - reduction, -beta, -beta + 1, ai_color
-                )
-            finally:
-                board.pop()
-            if null_score >= beta:
-                return beta
+            if board.turn == ai_color and static_eval >= beta + 75:
+                board.push(chess.Move.null())
+                try:
+                    null_score = self.search(board, depth - 1 - reduction, beta - 1, beta, ai_color)
+                finally:
+                    board.pop()
+                if null_score >= beta:
+                    return beta
+            elif board.turn != ai_color and static_eval <= alpha - 75:
+                board.push(chess.Move.null())
+                try:
+                    null_score = self.search(board, depth - 1 - reduction, alpha, alpha + 1, ai_color)
+                finally:
+                    board.pop()
+                if null_score <= alpha:
+                    return alpha
 
         legal_moves = list(board.legal_moves)
         ordered = self.order_moves(board, legal_moves)
@@ -673,6 +1430,7 @@ class BasicAI(RandomAI):
         if board.turn == ai_color:
             best = -1_000_000_000
             for idx, move in enumerate(ordered):
+                is_capture = board.is_capture(move)
                 board.push(move)
                 try:
                     # Late-move reduction
@@ -680,7 +1438,7 @@ class BasicAI(RandomAI):
                     if (
                         depth >= 3
                         and idx >= 4
-                        and not board.is_capture(move)
+                        and not is_capture
                         and not move.promotion
                         and not board.is_check()
                     ):
@@ -696,6 +1454,19 @@ class BasicAI(RandomAI):
                     )
                 finally:
                     board.pop()
+                if reduction and score > alpha:
+                    board.push(move)
+                    try:
+                        score = self.search(
+                            board,
+                            depth - 1,
+                            alpha,
+                            beta,
+                            ai_color,
+                            move_index=idx,
+                        )
+                    finally:
+                        board.pop()
                 best = max(best, score)
                 alpha = max(alpha, best)
                 if alpha >= beta:
@@ -704,13 +1475,14 @@ class BasicAI(RandomAI):
 
         best = 1_000_000_000
         for idx, move in enumerate(ordered):
+            is_capture = board.is_capture(move)
             board.push(move)
             try:
                 reduction = 0
                 if (
                     depth >= 3
                     and idx >= 4
-                    and not board.is_capture(move)
+                    and not is_capture
                     and not move.promotion
                     and not board.is_check()
                 ):
@@ -726,6 +1498,19 @@ class BasicAI(RandomAI):
                 )
             finally:
                 board.pop()
+            if reduction and score < beta:
+                board.push(move)
+                try:
+                    score = self.search(
+                        board,
+                        depth - 1,
+                        alpha,
+                        beta,
+                        ai_color,
+                        move_index=idx,
+                    )
+                finally:
+                    board.pop()
             best = min(best, score)
             beta = min(beta, best)
             if alpha >= beta:
@@ -804,11 +1589,17 @@ class BasicAI(RandomAI):
         if board.is_en_passant(move):
             captured_piece = chess.Piece(chess.PAWN, not board.turn)
 
+        if _is_immediate_checkmate(board, move):
+            score += 2_000_000
+
+        score += _urgent_safety_move_score(board, move)
+
         # MVV-LVA for captures
         if captured_piece is not None:
             victim = PIECE_VALUES[captured_piece.piece_type]
             attacker = PIECE_VALUES[moving_piece.piece_type] if moving_piece else 0
             score += 10 * victim - attacker
+            score += 3 * _capture_gain(board, move)
 
         if move.promotion:
             score += PIECE_VALUES[move.promotion] - PIECE_VALUES[chess.PAWN]
@@ -816,6 +1607,11 @@ class BasicAI(RandomAI):
         # PST bonus for the target square
         if moving_piece is not None:
             score += _pst_value(moving_piece.piece_type, move.to_square, moving_piece.color) // 4
+            score += _move_tactical_bonus(board, move)
+            if moving_piece.piece_type == chess.KNIGHT and chess.square_file(move.to_square) in (0, 7):
+                score -= RIM_KNIGHT_PENALTY
+            if moving_piece.piece_type in MINOR_PIECES and captured_piece == chess.Piece(chess.PAWN, not moving_piece.color):
+                score -= UNSAFE_MINOR_PAWN_CAPTURE_PENALTY // 2
 
         # Center control
         if move.to_square in CENTER_SQUARES:
@@ -831,6 +1627,8 @@ class BasicAI(RandomAI):
         finally:
             board.pop()
 
+        score -= HANGING_MOVE_PENALTY_SCALE * _move_hanging_penalty(board, move)
+
         return score
 
     # ------------------------------------------------------------------
@@ -838,6 +1636,9 @@ class BasicAI(RandomAI):
     # ------------------------------------------------------------------
 
     def _noisy_moves(self, board: chess.Board) -> list[chess.Move]:
+        if board.is_check():
+            return self.order_moves(board, list(board.legal_moves))
+
         moves = []
         for move in board.legal_moves:
             if board.is_capture(move) or move.promotion:

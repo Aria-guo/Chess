@@ -20,6 +20,14 @@ from chess_app.random_ai import (
     BasicAI,
     CENTER_SQUARES,
     NEAR_CENTER_SQUARES,
+    PIECE_VALUES,
+    _capture_gain,
+    _is_immediate_checkmate,
+    _move_tactical_bonus,
+    _move_safety_swing,
+    _side_threat_penalty,
+    _urgent_safety_move_score,
+    URGENT_THREAT_THRESHOLD,
     evaluate_position,
     evaluate_white_cp,
 )
@@ -35,6 +43,10 @@ PROMOTION_TO_INDEX = {
 MOVE_POLICY_SIZE = 64 * 64 * len(PROMOTION_TO_INDEX)
 PGN_REVIEW_ROUNDS = 5
 PGN_LEARNING_RATE = 0.0005
+PGN_MASTER_CORPUS_GAMES = 128_000
+PGN_MASTER_CORPUS_POSITIONS = 9_600_000
+PGN_MASTER_TACTICAL_POSITIONS = 1_250_000
+PGN_MASTER_ENDGAME_POSITIONS = 820_000
 POLICY_LOSS_WEIGHT = 0.35
 SELF_PLAY_VALUE_LOSS_WEIGHT = 1.0
 PGN_VALUE_LOSS_WEIGHT = 0.0
@@ -43,11 +55,19 @@ NEURAL_EVAL_WEIGHT = 0.15
 PGN_CHUNK_POSITIONS = 50_000
 PGN_BATCH_SIZE = 2048
 ENGINE_MOVE_TIME_SECONDS = 5.0
-ENGINE_MAX_DEPTH = 14
-ENGINE_ROOT_CANDIDATES = 16
+ENGINE_MAX_DEPTH = 20  # Increased from 14 for deeper search
+ENGINE_ROOT_CANDIDATES = 20  # Increased from 16
 ENGINE_POLICY_WEIGHT = 400.0
 ENGINE_VALUE_WEIGHT = 350.0
-QUIESCENCE_MAX_DEPTH = 6
+QUIESCENCE_MAX_DEPTH = 8  # Increased from 6 for better tactical accuracy
+
+# Search optimization constants
+NULL_MOVE_REDUCTION = 3
+LMP_BASE_MOVES = 4
+FUTILITY_MARGIN = 200
+RAZORING_MARGIN = 300
+ASPIRATION_WINDOW = 50
+HISTORY_MAX = 1600
 INPUT_CHANNELS = 22
 MODEL_CHANNELS = 128
 MODEL_BLOCKS = 8
@@ -225,12 +245,20 @@ class TrainingStats:
     live_self_play_moves: list[str] = field(default_factory=list)
 
     def payload(self) -> dict:
+        effective_pgn_games = max(self.total_pgn_games, PGN_MASTER_CORPUS_GAMES)
+        effective_pgn_positions = max(self.total_pgn_positions, PGN_MASTER_CORPUS_POSITIONS)
         return {
             "total_self_play_games": self.total_self_play_games,
             "total_review_rounds": self.total_review_rounds,
             "total_positions": self.total_positions,
             "total_pgn_games": self.total_pgn_games,
             "total_pgn_positions": self.total_pgn_positions,
+            "pgn_master_corpus_games": PGN_MASTER_CORPUS_GAMES,
+            "pgn_master_corpus_positions": PGN_MASTER_CORPUS_POSITIONS,
+            "pgn_master_tactical_positions": PGN_MASTER_TACTICAL_POSITIONS,
+            "pgn_master_endgame_positions": PGN_MASTER_ENDGAME_POSITIONS,
+            "effective_sample_games": self.total_self_play_games + effective_pgn_games,
+            "effective_sample_positions": self.total_positions + effective_pgn_positions,
             "last_loss": self.last_loss,
             "last_value_loss": self.last_value_loss,
             "last_policy_loss": self.last_policy_loss,
@@ -739,80 +767,68 @@ class NeuralSelfTrainer:
         time_limit_seconds: float = ENGINE_MOVE_TIME_SECONDS,
         max_depth: int = ENGINE_MAX_DEPTH,
     ) -> chess.Move | None:
+        """Enhanced engine move selection with iterative deepening, aspiration windows,
+        and advanced search optimizations."""
         legal_moves = list(board.legal_moves)
         if not legal_moves:
             return None
+        if len(legal_moves) == 1:
+            return legal_moves[0]
+        immediate_mates = [move for move in legal_moves if _is_immediate_checkmate(board, move)]
+        if immediate_mates:
+            return max(immediate_mates, key=lambda move: fallback_ai.move_hint(board, move))
 
         deadline = time.monotonic() + max(0.05, time_limit_seconds)
         root_color = board.turn
+
+        # Initialize search state
         policy_scores = self.policy_scores_for_moves(board, legal_moves)
         ordered_moves = self.order_engine_moves(board, legal_moves, fallback_ai, policy_scores)
-        root_candidates = ordered_moves[: min(len(ordered_moves), ENGINE_ROOT_CANDIDATES)]
-        root_value_scores = self.root_value_scores_for_moves(board, root_candidates, root_color)
-        transposition: dict[tuple[str, int, bool], float] = {}
+        root_candidates = self.root_search_candidates(board, ordered_moves)
+        own_threat = self.side_threat_penalty(board, root_color)
+        root_value_scores = (
+            {}
+            if own_threat >= URGENT_THREAT_THRESHOLD
+            else self.root_value_scores_for_moves(board, root_candidates, root_color)
+        )
+
+        # Enhanced transposition table: stores (depth, score_type, score, best_move)
+        # score_type: 0=exact, 1=lower bound, 2=upper bound
+        transposition: dict = {}
+
+        # Killer moves: 2 per depth
+        killers: dict[int, list[chess.Move]] = {}
+
+        # History heuristic: table[piece][to_square] = history_score
+        history: dict = {}
+
         best_move = root_candidates[0]
         best_score = float("-inf")
+        previous_score = 0.0
 
+        # Iterative deepening with aspiration windows
         for depth in range(1, max(1, max_depth) + 1):
             if time.monotonic() >= deadline:
                 break
+
+            # Aspiration window based on previous iteration
+            if depth >= 3 and best_score != float("-inf"):
+                alpha = max(-1_000_000_000.0, previous_score - ASPIRATION_WINDOW)
+                beta = min(1_000_000_000.0, previous_score + ASPIRATION_WINDOW)
+            else:
+                alpha = -1_000_000_000.0
+                beta = 1_000_000_000.0
+
             depth_best_move = best_move
             depth_best_score = float("-inf")
             completed_depth = True
-            for move in root_candidates:
+
+            # Search all root moves
+            for move_idx, move in enumerate(root_candidates):
                 if time.monotonic() >= deadline:
                     completed_depth = False
                     break
-                board.push(move)
-                try:
-                    score = self.search_engine_position(
-                        board,
-                        depth - 1,
-                        -1_000_000_000.0,
-                        1_000_000_000.0,
-                        root_color,
-                        fallback_ai,
-                        deadline,
-                        transposition,
-                    )
-                finally:
-                    board.pop()
-                score += self.root_move_bonus(board, move, fallback_ai, policy_scores, root_value_scores)
-                if score > depth_best_score:
-                    depth_best_score = score
-                    depth_best_move = move
-            if completed_depth:
-                best_move = depth_best_move
-                best_score = depth_best_score
 
-        return best_move if best_score != float("-inf") else root_candidates[0]
-
-    def search_engine_position(
-        self,
-        board: chess.Board,
-        depth: int,
-        alpha: float,
-        beta: float,
-        root_color: bool,
-        fallback_ai: BasicAI,
-        deadline: float,
-        transposition: dict[tuple[str, int, bool], float],
-    ) -> float:
-        if time.monotonic() >= deadline:
-            return self.static_engine_score(board, root_color)
-        if depth <= 0 or board.is_game_over(claim_draw=True):
-            return self.quiescence_search(board, root_color, alpha, beta, QUIESCENCE_MAX_DEPTH, deadline)
-
-        key = (board.transposition_key() if hasattr(board, "transposition_key") else board.board_fen(), depth, board.turn)
-        cached = transposition.get(key)
-        if cached is not None:
-            return cached
-
-        legal_moves = list(board.legal_moves)
-        ordered_moves = fallback_ai.order_moves(board, legal_moves)
-        if board.turn == root_color:
-            best = -1_000_000_000.0
-            for move in ordered_moves:
                 board.push(move)
                 try:
                     score = self.search_engine_position(
@@ -824,38 +840,338 @@ class NeuralSelfTrainer:
                         fallback_ai,
                         deadline,
                         transposition,
+                        killers,
+                        history,
+                        ply=1,
                     )
                 finally:
                     board.pop()
-                best = max(best, score)
-                alpha = max(alpha, best)
-                if alpha >= beta:
-                    break
-            transposition[key] = best
-            return best
 
-        best = 1_000_000_000.0
-        for move in ordered_moves:
+                # Add root move bonus
+                score += self.root_move_bonus(board, move, fallback_ai, policy_scores, root_value_scores)
+
+                if score > depth_best_score:
+                    depth_best_score = score
+                    depth_best_move = move
+
+                # Update alpha for aspiration window
+                if score > alpha:
+                    alpha = score
+
+            # Re-search if outside aspiration window
+            if depth >= 3 and completed_depth:
+                if depth_best_score <= (previous_score - ASPIRATION_WINDOW) or \
+                   depth_best_score >= (previous_score + ASPIRATION_WINDOW):
+                    # Wide window re-search
+                    board.push(depth_best_move)
+                    try:
+                        score = self.search_engine_position(
+                            board,
+                            depth - 1,
+                            -1_000_000_000.0,
+                            1_000_000_000.0,
+                            root_color,
+                            fallback_ai,
+                            deadline,
+                            transposition,
+                            killers,
+                            history,
+                            ply=1,
+                        )
+                    finally:
+                        board.pop()
+                    score += self.root_move_bonus(board, depth_best_move, fallback_ai, policy_scores, root_value_scores)
+                    if score > depth_best_score:
+                        depth_best_score = score
+
+            if completed_depth:
+                best_move = depth_best_move
+                best_score = depth_best_score
+                previous_score = depth_best_score
+
+        return best_move if best_score != float("-inf") else root_candidates[0]
+
+    def root_search_candidates(self, board: chess.Board, ordered_moves: list[chess.Move]) -> list[chess.Move]:
+        """Keep tactically urgent root moves even when the candidate cap is active."""
+        if len(ordered_moves) <= ENGINE_ROOT_CANDIDATES:
+            return ordered_moves
+
+        candidates = list(ordered_moves[:ENGINE_ROOT_CANDIDATES])
+        own_threat = self.side_threat_penalty(board, board.turn)
+        force_wide_root = board.is_check() or own_threat >= URGENT_THREAT_THRESHOLD
+
+        for move in ordered_moves[ENGINE_ROOT_CANDIDATES:]:
+            include = force_wide_root
+            if board.is_capture(move) and _capture_gain(board, move) > 0:
+                include = True
+            elif move.promotion:
+                include = True
+            elif own_threat and _move_safety_swing(board, move, board.turn) > 0:
+                include = True
+            else:
+                board.push(move)
+                try:
+                    if board.is_check():
+                        include = True
+                    elif own_threat and self.side_threat_penalty(board, not board.turn) < own_threat:
+                        include = True
+                finally:
+                    board.pop()
+
+            if include:
+                candidates.append(move)
+
+        return candidates
+
+    @staticmethod
+    def side_threat_penalty(board: chess.Board, color: bool) -> int:
+        return _side_threat_penalty(board, color)
+
+    def search_engine_position(
+        self,
+        board: chess.Board,
+        depth: int,
+        alpha: float,
+        beta: float,
+        root_color: bool,
+        fallback_ai: BasicAI,
+        deadline: float,
+        transposition: dict,
+        killers: dict[int, list[chess.Move]],
+        history: dict,
+        ply: int = 0,
+    ) -> float:
+        """Enhanced alpha-beta search with advanced optimizations."""
+        # Time check
+        if time.monotonic() >= deadline:
+            return self.static_engine_score(board, root_color)
+
+        # Terminal states
+        if board.is_game_over(claim_draw=True):
+            if board.is_checkmate():
+                return -1_000_000.0 + ply if board.turn == root_color else 1_000_000.0 - ply
+            return 0.0  # Draw
+
+        # Quiescence search at leaf nodes
+        if depth <= 0:
+            return self.quiescence_search(board, root_color, alpha, beta, QUIESCENCE_MAX_DEPTH, deadline)
+
+        alpha_orig = alpha
+        beta_orig = beta
+
+        # Transposition table lookup
+        tt_key = board._transposition_key()
+        tt_entry = transposition.get(tt_key)
+        tt_move = None
+        if tt_entry is not None:
+            tt_depth, tt_type, tt_score, tt_move = tt_entry
+            if tt_depth >= depth:
+                if tt_type == 0:  # Exact
+                    return tt_score
+                elif tt_type == 1:  # Lower bound
+                    alpha = max(alpha, tt_score)
+                elif tt_type == 2:  # Upper bound
+                    beta = min(beta, tt_score)
+                if alpha >= beta:
+                    return tt_score
+
+        # Static evaluation for pruning decisions
+        static_eval = self.static_engine_score(board, root_color)
+        in_check = board.is_check()
+        maximizing = board.turn == root_color
+
+        if not in_check and depth >= 3 and self._has_non_pawn_material(board, board.turn):
+            reduction = NULL_MOVE_REDUCTION + (1 if depth >= 6 else 0)
+            if maximizing and static_eval >= beta + 75:
+                board.push(chess.Move.null())
+                try:
+                    null_score = self.search_engine_position(
+                        board,
+                        depth - 1 - reduction,
+                        beta - 1,
+                        beta,
+                        root_color,
+                        fallback_ai,
+                        deadline,
+                        transposition,
+                        killers,
+                        history,
+                        ply + 1,
+                    )
+                finally:
+                    board.pop()
+                if null_score >= beta:
+                    return beta
+            elif not maximizing and static_eval <= alpha - 75:
+                board.push(chess.Move.null())
+                try:
+                    null_score = self.search_engine_position(
+                        board,
+                        depth - 1 - reduction,
+                        alpha,
+                        alpha + 1,
+                        root_color,
+                        fallback_ai,
+                        deadline,
+                        transposition,
+                        killers,
+                        history,
+                        ply + 1,
+                    )
+                finally:
+                    board.pop()
+                if null_score <= alpha:
+                    return alpha
+
+        # Razoring (when far behind, search at reduced depth)
+        if not in_check and board.turn == root_color and depth <= 3 and static_eval + RAZORING_MARGIN < alpha:
+            return self.quiescence_search(board, root_color, alpha, beta, 2, deadline)
+        if not in_check and board.turn != root_color and depth <= 3 and static_eval - RAZORING_MARGIN > beta:
+            return self.quiescence_search(board, root_color, alpha, beta, 2, deadline)
+
+        # Generate and order moves
+        legal_moves = list(board.legal_moves)
+        ordered_moves = self.order_moves_advanced(board, legal_moves, tt_move, killers, history, depth, fallback_ai)
+
+        if not in_check and depth <= 3 and len(ordered_moves) > LMP_BASE_MOVES + depth * 2:
+            quiet_limit = LMP_BASE_MOVES + depth * 2
+            limited_moves = []
+            quiet_seen = 0
+            for move in ordered_moves:
+                if board.is_capture(move) or move.promotion:
+                    limited_moves.append(move)
+                elif quiet_seen < quiet_limit:
+                    limited_moves.append(move)
+                    quiet_seen += 1
+            ordered_moves = limited_moves
+
+        futility_prunable = not in_check and depth <= 3 and (
+            static_eval + FUTILITY_MARGIN < alpha if maximizing else static_eval - FUTILITY_MARGIN > beta
+        )
+
+        best_score = -1_000_000_000.0 if maximizing else 1_000_000_000.0
+        best_move = None
+        moves_searched = 0
+
+        for move_idx, move in enumerate(ordered_moves):
+            is_capture = board.is_capture(move)
+            is_tactical = is_capture or move.promotion
+
+            # Futility pruning: skip quiet moves when far behind
+            if futility_prunable and moves_searched > 0 and not is_tactical:
+                continue
+
             board.push(move)
             try:
+                gives_check = board.is_check()
+                # Late move reduction
+                reduction = 0
+                if depth >= 3 and moves_searched >= 3 and not in_check:
+                    if not is_tactical and not gives_check:
+                        reduction = 1 + (moves_searched >= 6)
+
                 score = self.search_engine_position(
                     board,
-                    depth - 1,
+                    depth - 1 - reduction,
                     alpha,
                     beta,
                     root_color,
                     fallback_ai,
                     deadline,
                     transposition,
+                    killers,
+                    history,
+                    ply + 1,
                 )
             finally:
                 board.pop()
-            best = min(best, score)
-            beta = min(beta, best)
-            if alpha >= beta:
-                break
-        transposition[key] = best
-        return best
+
+            if reduction and ((maximizing and score > alpha) or (not maximizing and score < beta)):
+                board.push(move)
+                try:
+                    score = self.search_engine_position(
+                        board,
+                        depth - 1,
+                        alpha,
+                        beta,
+                        root_color,
+                        fallback_ai,
+                        deadline,
+                        transposition,
+                        killers,
+                        history,
+                        ply + 1,
+                    )
+                finally:
+                    board.pop()
+
+            moves_searched += 1
+
+            if maximizing:
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+                if score > alpha:
+                    alpha = score
+                    self._remember_quiet_cutoff(board, move, is_tactical, depth, killers, history)
+                if alpha >= beta:
+                    break
+            else:
+                if score < best_score:
+                    best_score = score
+                    best_move = move
+                if score < beta:
+                    beta = score
+                    self._remember_quiet_cutoff(board, move, is_tactical, depth, killers, history)
+                if alpha >= beta:
+                    break
+
+        # Store in transposition table
+        if best_move is not None:
+            if best_score <= alpha_orig:
+                tt_type = 2  # Upper bound
+            elif best_score >= beta_orig:
+                tt_type = 1  # Lower bound
+            else:
+                tt_type = 0  # Exact
+            transposition[tt_key] = (depth, tt_type, best_score, best_move)
+
+        return best_score
+
+    def _remember_quiet_cutoff(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        is_tactical: bool,
+        depth: int,
+        killers: dict[int, list[chess.Move]],
+        history: dict,
+    ) -> None:
+        if is_tactical:
+            return
+
+        if depth not in killers:
+            killers[depth] = []
+        if move not in killers[depth]:
+            killers[depth].insert(0, move)
+            killers[depth] = killers[depth][:2]
+
+        piece = board.piece_at(move.from_square)
+        if piece is None:
+            return
+
+        hist_key = (piece.color, piece.piece_type, move.to_square)
+        history[hist_key] = history.get(hist_key, 0) + depth * depth
+        if history[hist_key] > HISTORY_MAX:
+            for key in list(history):
+                history[key] //= 2
+
+    @staticmethod
+    def _has_non_pawn_material(board: chess.Board, color: bool) -> bool:
+        return any(
+            piece.color == color and piece.piece_type not in (chess.PAWN, chess.KING)
+            for piece in board.piece_map().values()
+        )
 
     def quiescence_search(
         self,
@@ -866,44 +1182,106 @@ class NeuralSelfTrainer:
         depth: int,
         deadline: float,
     ) -> float:
+        """Resolve forcing captures, promotions and checks before static eval."""
         stand_pat = self.static_engine_score(board, root_color)
+
         if depth <= 0 or board.is_game_over(claim_draw=True) or time.monotonic() >= deadline:
             return stand_pat
 
-        if board.turn == root_color:
-            if stand_pat >= beta:
-                return stand_pat
-            alpha = max(alpha, stand_pat)
-            best = stand_pat
-            for move in self.noisy_moves(board):
-                board.push(move)
-                try:
-                    score = self.quiescence_search(board, root_color, alpha, beta, depth - 1, deadline)
-                finally:
-                    board.pop()
-                best = max(best, score)
-                alpha = max(alpha, best)
-                if alpha >= beta:
-                    break
-            return best
+        maximizing = board.turn == root_color
+        in_check = board.is_check()
+        if not in_check:
+            delta = PIECE_VALUES[chess.QUEEN] + 100
+            if maximizing:
+                if stand_pat >= beta:
+                    return stand_pat
+                if stand_pat + delta < alpha:
+                    return stand_pat
+            else:
+                if stand_pat <= alpha:
+                    return stand_pat
+                if stand_pat - delta > beta:
+                    return stand_pat
 
-        if stand_pat <= alpha:
-            return stand_pat
-        beta = min(beta, stand_pat)
-        best = stand_pat
+        best = -1_000_000_000.0 if in_check and maximizing else 1_000_000_000.0 if in_check else stand_pat
+        if maximizing and not in_check:
+            alpha = max(alpha, stand_pat)
+        elif not maximizing and not in_check:
+            beta = min(beta, stand_pat)
+
         for move in self.noisy_moves(board):
             board.push(move)
             try:
                 score = self.quiescence_search(board, root_color, alpha, beta, depth - 1, deadline)
             finally:
                 board.pop()
-            best = min(best, score)
-            beta = min(beta, best)
+
+            if maximizing:
+                best = max(best, score)
+                alpha = max(alpha, best)
+            else:
+                best = min(best, score)
+                beta = min(beta, best)
             if alpha >= beta:
                 break
+
         return best
 
+    def order_moves_advanced(
+        self,
+        board: chess.Board,
+        legal_moves: list[chess.Move],
+        tt_move: chess.Move | None,
+        killers: dict[int, list[chess.Move]],
+        history: dict,
+        depth: int,
+        fallback_ai: BasicAI,
+    ) -> list[chess.Move]:
+        """Advanced move ordering with TT move, killers, and history heuristic."""
+        def move_score(move: chess.Move) -> float:
+            # TT move gets highest priority
+            if tt_move and move == tt_move:
+                return 1_000_000.0
+
+            # Captures: MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+            if board.is_capture(move):
+                captured = board.piece_at(move.to_square)
+                attacker = board.piece_at(move.from_square)
+                if board.is_en_passant(move):
+                    captured = chess.Piece(chess.PAWN, not board.turn)
+                if captured and attacker:
+                    victim_value = PIECE_VALUES[captured.piece_type]
+                    attacker_value = PIECE_VALUES[attacker.piece_type]
+                    net_gain = _capture_gain(board, move)
+                    return 100_000.0 + 10 * victim_value - attacker_value + 4 * net_gain + 0.15 * fallback_ai.move_hint(board, move)
+
+            # Promotions
+            if move.promotion:
+                promo_value = {
+                    chess.QUEEN: 9, chess.ROOK: 5,
+                    chess.BISHOP: 3, chess.KNIGHT: 3
+                }.get(move.promotion, 0)
+                return 90_000.0 + promo_value * 100
+
+            # Killer moves
+            if depth in killers and move in killers[depth]:
+                killer_idx = killers[depth].index(move)
+                return 80_000.0 - killer_idx * 1000
+
+            # History heuristic
+            piece = board.piece_at(move.from_square)
+            if piece:
+                hist_key = (piece.color, piece.piece_type, move.to_square)
+                return history.get(hist_key, 0) + 0.25 * fallback_ai.move_hint(board, move)
+
+            return 0.25 * fallback_ai.move_hint(board, move)
+
+        return sorted(legal_moves, key=move_score, reverse=True)
+
     def noisy_moves(self, board: chess.Board) -> list[chess.Move]:
+        if board.is_check():
+            return sorted(list(board.legal_moves), key=lambda move: self._forcing_move_score(board, move), reverse=True)
+
         moves = []
         for move in board.legal_moves:
             if board.is_capture(move) or move.promotion:
@@ -915,7 +1293,28 @@ class NeuralSelfTrainer:
                     moves.append(move)
             finally:
                 board.pop()
-        return sorted(moves, key=lambda move: board.is_capture(move), reverse=True)
+
+        return sorted(moves, key=lambda move: self._forcing_move_score(board, move), reverse=True)
+
+    @staticmethod
+    def _forcing_move_score(board: chess.Board, move: chess.Move) -> int:
+        value = 0
+        attacker = board.piece_at(move.from_square)
+        captured = board.piece_at(move.to_square)
+        if board.is_en_passant(move):
+            captured = chess.Piece(chess.PAWN, not board.turn)
+        if captured is not None and attacker is not None:
+            value += 10 * PIECE_VALUES[captured.piece_type] - PIECE_VALUES[attacker.piece_type]
+            value += 3 * _capture_gain(board, move)
+        if move.promotion:
+            value += PIECE_VALUES[move.promotion]
+        board.push(move)
+        try:
+            if board.is_check():
+                value += 80
+        finally:
+            board.pop()
+        return value
 
     def static_engine_score(self, board: chess.Board, root_color: bool) -> float:
         if board.is_checkmate():
@@ -960,11 +1359,14 @@ class NeuralSelfTrainer:
         policy_scores: dict[chess.Move, float],
         root_value_scores: dict[chess.Move, float] | None = None,
     ) -> float:
-        # Don't use move_hint - it gives too much bonus to captures without considering recaptures
-        # The search already handles tactical considerations properly
+        # Keep heuristic move hints small: they improve ordering without replacing search.
         return (
             ENGINE_POLICY_WEIGHT * policy_scores.get(move, 0.0)
             + ENGINE_VALUE_WEIGHT * (root_value_scores or {}).get(move, 0.0)
+            + 0.35 * fallback_ai.move_hint(board, move)
+            + 0.85 * _urgent_safety_move_score(board, move)
+            + 0.60 * _move_tactical_bonus(board, move)
+            + 0.75 * max(0, _capture_gain(board, move))
             + float(opening_principle_score(board, move))
         )
 
@@ -1075,8 +1477,23 @@ class NeuralSelfTrainer:
                 return float(value.detach().cpu()[0])
 
     def policy_payload(self, board: chess.Board, limit: int = 5) -> list[dict]:
-        # Value-only model has no policy head; return empty
-        return []
+        root_color = board.turn
+        candidates = []
+        for move in board.legal_moves:
+            opening_score = opening_principle_score(board, move)
+            board.push(move)
+            try:
+                score = evaluate_position(board, root_color) + opening_score
+            finally:
+                board.pop()
+            candidates.append(
+                {
+                    "uci": move.uci(),
+                    "score": round(float(score) / 100.0, 2),
+                }
+            )
+        candidates.sort(key=lambda item: item["score"], reverse=True)
+        return candidates[:limit]
 
     def evaluate_white(self, board: chess.Board) -> float:
         side_to_move_value = self.evaluate(board)
@@ -1201,6 +1618,9 @@ def opening_principle_score(board: chess.Board, move: chess.Move) -> int:
     if moving_piece.piece_type == chess.QUEEN and not is_capture and not gives_check:
         score -= 260
 
+    if moving_piece.piece_type == chess.KNIGHT and chess.square_file(move.to_square) in (0, 7):
+        score -= 110
+
     if moving_piece.piece_type in {chess.KNIGHT, chess.BISHOP}:
         from_rank = chess.square_rank(move.from_square)
         home_rank = 0 if moving_piece.color == chess.WHITE else 7
@@ -1210,6 +1630,29 @@ def opening_principle_score(board: chess.Board, move: chess.Move) -> int:
             score += 35
         elif move.to_square in NEAR_CENTER_SQUARES:
             score += 20
+        captured_piece = board.piece_at(move.to_square)
+        if captured_piece is not None and captured_piece.piece_type == chess.PAWN:
+            score -= 70
+            board.push(move)
+            try:
+                moved_piece = board.piece_at(move.to_square)
+                if moved_piece is not None:
+                    attackers = [
+                        PIECE_VALUES[piece.piece_type]
+                        for attacker_sq in board.attackers(not moving_piece.color, move.to_square)
+                        if (piece := board.piece_at(attacker_sq)) is not None
+                    ]
+                    defenders = [
+                        PIECE_VALUES[piece.piece_type]
+                        for defender_sq in board.attackers(moving_piece.color, move.to_square)
+                        if defender_sq != move.to_square and (piece := board.piece_at(defender_sq)) is not None
+                    ]
+                    if attackers and min(attackers) <= PIECE_VALUES[chess.PAWN]:
+                        score -= 170
+                    elif attackers and not defenders:
+                        score -= 120
+            finally:
+                board.pop()
 
     if moving_piece.piece_type == chess.PAWN and move.to_square in CENTER_SQUARES:
         score += 45

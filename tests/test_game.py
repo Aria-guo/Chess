@@ -15,6 +15,10 @@ from chess_app.neural_trainer import (
     INPUT_CHANNELS,
     MOVE_POLICY_SIZE,
     PGN_LEARNING_RATE,
+    PGN_MASTER_CORPUS_GAMES,
+    PGN_MASTER_CORPUS_POSITIONS,
+    PGN_MASTER_ENDGAME_POSITIONS,
+    PGN_MASTER_TACTICAL_POSITIONS,
     PGN_REVIEW_ROUNDS,
     NeuralSelfTrainer,
     ResNetValueNet,
@@ -23,7 +27,7 @@ from chess_app.neural_trainer import (
     move_to_policy_index,
     opening_principle_score,
 )
-from chess_app.random_ai import BasicAI, RandomAI
+from chess_app.random_ai import BasicAI, RandomAI, _side_threat_penalty, evaluate_position
 from chess_app.web_app import WebSession, create_app
 
 
@@ -60,6 +64,111 @@ def test_basic_ai_prefers_winning_material():
     ai = BasicAI(seed=7)
 
     assert ai.choose_move(board) == chess.Move.from_uci("e4d5")
+
+
+def test_neural_engine_prefers_clear_material_capture(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    board = chess.Board("3r3k/8/8/8/8/8/8/3QK3 w - - 0 1")
+    ai = BasicAI(seed=7)
+
+    assert trainer.choose_engine_move(board, ai, time_limit_seconds=0.4, max_depth=3) == chess.Move.from_uci("d1d8")
+
+
+def test_neural_quiescence_handles_quiet_check_evasion(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    board = chess.Board("3r3k/8/8/7Q/8/8/8/4K3 b - - 1 1")
+    ai = BasicAI(seed=7)
+
+    score = trainer.quiescence_search(
+        board,
+        root_color=chess.WHITE,
+        alpha=-1_000_000_000.0,
+        beta=1_000_000_000.0,
+        depth=4,
+        deadline=time.monotonic() + 1.0,
+    )
+
+    assert abs(score) < 100_000
+
+
+def test_basic_ai_prefers_mate_in_one_over_check():
+    board = chess.Board("8/8/8/8/8/8/8/k1KQ4 w - - 0 1")
+    ai = BasicAI(seed=7, search_depth=2)
+
+    move = ai.choose_move(board)
+    board.push(move)
+
+    assert board.is_checkmate()
+
+
+def test_neural_engine_prefers_mate_in_one_over_check(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    board = chess.Board("8/8/8/8/8/8/8/k1KQ4 w - - 0 1")
+    ai = BasicAI(seed=7, search_depth=2)
+
+    move = trainer.choose_engine_move(board, ai, time_limit_seconds=0.3, max_depth=2)
+    board.push(move)
+
+    assert board.is_checkmate()
+
+
+def test_neural_engine_finds_knight_fork_under_short_time(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    board = chess.Board("3q3k/8/8/4N3/8/8/8/4K3 w - - 0 1")
+    ai = BasicAI(seed=7, search_depth=3)
+
+    assert trainer.choose_engine_move(board, ai, time_limit_seconds=0.6, max_depth=3) == chess.Move.from_uci("e5f7")
+
+
+def test_evaluation_scores_checkmate_for_winning_side():
+    board = chess.Board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1")
+
+    assert board.is_checkmate()
+    assert evaluate_position(board, chess.WHITE) > 900_000
+    assert evaluate_position(board, chess.BLACK) < -900_000
+
+
+def test_move_hint_discourages_early_rim_knights():
+    board = chess.Board()
+    ai = BasicAI(seed=7)
+
+    assert ai.move_hint(board, chess.Move.from_uci("g1f3")) > ai.move_hint(board, chess.Move.from_uci("g1h3")) + 100
+    assert ai.move_hint(board, chess.Move.from_uci("b1c3")) > ai.move_hint(board, chess.Move.from_uci("b1a3")) + 100
+
+
+def test_move_hint_discourages_unsafe_minor_piece_pawn_grab():
+    board = chess.Board()
+    for san in ["e4", "e5", "Bc4", "Nc6"]:
+        board.push_san(san)
+    ai = BasicAI(seed=7)
+
+    assert ai.move_hint(board, chess.Move.from_uci("g1f3")) > ai.move_hint(board, chess.Move.from_uci("c4f7"))
+
+
+def test_piece_safety_penalizes_minor_piece_attacked_by_pawn():
+    safe = chess.Board("4k3/p7/8/8/4N3/8/8/4K3 w - - 0 1")
+    unsafe = chess.Board("4k3/8/8/3p4/4N3/8/8/4K3 w - - 0 1")
+
+    assert evaluate_position(safe, chess.WHITE) > evaluate_position(unsafe, chess.WHITE) + 100
+
+
+def test_move_hint_answers_pawn_fork_before_wing_pawn():
+    board = chess.Board("4k2r/7p/2n1b3/3P4/8/8/8/4K3 b - - 0 1")
+    ai = BasicAI(seed=7, search_depth=2)
+    answer = chess.Move.from_uci("e6d5")
+    wing_pawn = chess.Move.from_uci("h7h6")
+
+    assert _side_threat_penalty(board, chess.BLACK) >= 600
+    assert ai.move_hint(board, answer) > ai.move_hint(board, wing_pawn) + 1500
+    assert ai.choose_move(board) == answer
+
+
+def test_neural_engine_answers_pawn_fork_before_wing_pawn(tmp_path):
+    trainer = NeuralSelfTrainer(model_path=str(tmp_path / "model.pt"), stats_path=str(tmp_path / "stats.json"))
+    board = chess.Board("4k2r/7p/2n1b3/3P4/8/8/8/4K3 b - - 0 1")
+    ai = BasicAI(seed=7, search_depth=2)
+
+    assert trainer.choose_engine_move(board, ai, time_limit_seconds=0.4, max_depth=3) == chess.Move.from_uci("e6d5")
 
 
 def test_opening_book_starts_queen_gambit_as_white():
@@ -335,6 +444,12 @@ def test_web_training_status_available():
     assert "active_review_round" in payload["training"]
     assert payload["training"]["pgn_review_rounds"] == PGN_REVIEW_ROUNDS
     assert payload["training"]["pgn_learning_rate"] == PGN_LEARNING_RATE
+    assert payload["training"]["pgn_master_corpus_games"] == PGN_MASTER_CORPUS_GAMES
+    assert payload["training"]["pgn_master_corpus_positions"] == PGN_MASTER_CORPUS_POSITIONS
+    assert payload["training"]["pgn_master_tactical_positions"] == PGN_MASTER_TACTICAL_POSITIONS
+    assert payload["training"]["pgn_master_endgame_positions"] == PGN_MASTER_ENDGAME_POSITIONS
+    assert payload["training"]["effective_sample_games"] >= PGN_MASTER_CORPUS_GAMES
+    assert payload["training"]["effective_sample_positions"] >= PGN_MASTER_CORPUS_POSITIONS
     assert 0 <= payload["evaluation"]["white_percent"] <= 100
 
 
@@ -360,6 +475,12 @@ def test_web_home_includes_training_stats_panel():
     assert 'id="stats-self-play-games"' in html
     assert 'id="stats-total-trained-games"' in html
     assert 'id="stats-pgn-games"' in html
+    assert 'id="stats-pgn-library"' in html
+    assert 'id="train-pgn-library"' in html
+    assert 'id="stats-tactical-samples"' in html
+    assert 'id="stats-endgame-samples"' in html
+    assert "Sample total games" in html
+    assert "PGN master positions" in html
 
 
 def test_web_home_includes_self_play_watch_controls():
